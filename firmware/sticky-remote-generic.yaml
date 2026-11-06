@@ -1,0 +1,26 @@
+# The one firmware everyone flashes (web wizard): no home-specific values.
+# Wi-Fi, the player, the lights and the rest arrive as settings over USB; Home
+# Assistant sends the API key when the Sticky is added. Build:
+#   esphome compile sticky-remote-generic.yaml
+substitutions:
+  name_add_mac_suffix: "true"
+  wifi_mode: setup
+  ota_password: ""
+  setup_url: frankynov.ovh/sticky
+  room_name: ""
+  ha_base_url: ""
+  apple_tv: ""
+  apple_tv_remote: ""
+  player_name: Player
+  infuse_source: ""
+  infuse_label: ""
+  light_1: ""
+  light_1_name: ""
+  light_1_icon: bulb
+  light_2: ""
+  light_2_name: ""
+  light_2_icon: bulb
+  font_set: inter
+
+packages:
+  sticky: !include sticky-remote.yaml

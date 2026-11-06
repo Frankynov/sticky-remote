@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Privacy by construction: the browser lets this page load only its own files,
+     and send data only to its own server (file downloads) or over a WebSocket
+     (to your Home Assistant). No third-party scripts, no analytics, no cookies. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; connect-src 'self' wss: ws:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Sticky Remote · Setup</title>
+<meta name="description" content="Install and set up Sticky Remote on a Seeed reTerminal Sticky, from your browser.">
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="wizard.css">
+</head>
+<body>
+<header class="top">
+  <img src="icon.png" alt="" class="logo">
+  <div>
+    <h1>Sticky Remote</h1>
+    <p>Turn a reTerminal Sticky into a remote for your player and lights, with Home Assistant.</p>
+  </div>
+  <span class="demo-badge" id="demo-badge" hidden>Demo: no Sticky connected</span>
+</header>
+
+<div class="layout">
+  <nav class="steps" aria-label="Setup steps">
+    <ol id="step-list"></ol>
+    <p class="privacy">Everything runs in this page, on your computer. Your Wi-Fi password goes only to your Sticky, your Home Assistant token only to your Home Assistant. Nothing you enter is sent to this website or its author.</p>
+  </nav>
+  <main id="panel" aria-live="polite"></main>
+</div>
+
+<footer class="bottom">
+  <span id="fw-line">Firmware</span> ·
+  Flashing by <a href="https://github.com/espressif/esptool-js">esptool-js</a> (Apache 2.0) ·
+  Fonts: Inter, TRMNL (SIL OFL 1.1), Material Design Icons (Apache 2.0)
+</footer>
+
+<script type="module" src="wizard.js"></script>
+</body>
+</html>

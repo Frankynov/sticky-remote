@@ -1,0 +1,667 @@
+# =============================================================================
+# Sticky Remote: a media-player remote + one or two light tiles for the
+# reTerminal Sticky (ESP32-S3R8, 3.97" 800x480 SSD1677 e-paper, GT911 touch).
+#
+# Everything goes through Home Assistant. What the Sticky controls is a set of
+# settings stored on the device (sticky_device.h): the substitutions below are
+# only their defaults. A setup tool (the web wizard, Sticky Simulator) sends
+# real settings over USB; sticky-remote-generic.yaml builds the one firmware
+# everyone can flash, with empty defaults.
+# UI: portrait 480x800, pure black/white. Drawing, hit-testing and state live
+# in remote_ui.h (shared with the simulator).
+#
+# NOT YET TESTED ON HARDWARE. First things to check on the real device are
+# listed in README.md (rotation, touch axes, sleep/wake).
+# =============================================================================
+
+substitutions:
+  device_name: sticky-remote
+  friendly_name: Sticky Remote
+  # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
+  # several Stickies can live in one home. The generic firmware sets it.
+  name_add_mac_suffix: "false"
+  firmware_version: "0.2.1"
+
+  # --- Defaults for the device settings (overridden by settings sent over USB)
+  room_name: Living room
+  # Home Assistant base URL, used to fetch the artwork (entity_picture is a
+  # relative /api/media_player_proxy/... path that carries its own token).
+  ha_base_url: http://homeassistant.local:8123
+  apple_tv: media_player.living_room
+  apple_tv_remote: remote.living_room
+  player_name: Apple TV
+  infuse_source: Infuse
+  infuse_label: Open Infuse
+  light_1: light.floor_lamp
+  light_1_name: Floor lamp
+  light_1_icon: floor         # bulb, ceiling, floor or star
+  light_2: light.ceiling      # empty: a single light tile
+  light_2_name: Ceiling
+  light_2_icon: ceiling
+  font_set: inter             # inter or trmnl (both are built in)
+
+  # Where the "Finish setup" screen sends people.
+  setup_url: sticky-remote setup page
+
+  # Portrait. If the picture is upside down on the device, use 270 instead.
+  rotation: "90"
+  # Touch axes for portrait: flip these if taps land mirrored (see README).
+  touch_swap_xy: "false"
+  touch_mirror_x: "false"
+  touch_mirror_y: "false"
+
+  # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (chosen on the
+  # Sticky's hotspot or sent over USB). See wifi-builtin.yaml / wifi-setup.yaml.
+  wifi_mode: builtin
+  setup_ssid: Sticky-Remote
+
+  # Over-the-air updates: empty means no password (the generic firmware).
+  ota_password: ""
+
+  # Deep sleep after this long without a tap or button press (on battery
+  # only: on USB it stays awake).
+  sleep_after_ms: "180000"
+  # During setup (hotspot open, not configured, or not yet added to HA).
+  setup_sleep_after_ms: "600000"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: ${name_add_mac_suffix}
+  project:
+    name: fgilbert.sticky-remote
+    version: ${firmware_version}
+  includes:
+    - remote_ui.h
+    - sticky_device.h
+  on_boot:
+    # The power latch must be re-asserted before anything else, or the
+    # device switches itself off a moment after the button is released.
+    - priority: 600
+      then:
+        - output.turn_on: pwr_hold
+        - output.turn_on: pwr_lock
+        # BQ25616 charge enable is active low: "on" drives the pin LOW.
+        - output.turn_on: charge_enable
+        # Deselect the microSD card that shares the panel's SPI bus.
+        - output.turn_on: sd_cs_idle
+        - lambda: |-
+            remote_ui::release_sleep_holds();
+            id(last_activity) = millis();
+            remote_ui::request(true);
+            // Settings: the YAML's values are defaults; stored ones (sent over USB) win.
+            auto &d = sticky::defaults();
+            d.player = "${apple_tv}";
+            d.remote = "${apple_tv_remote}";
+            d.player_name = "${player_name}";
+            d.app = "${infuse_source}";
+            d.app_label = "${infuse_label}";
+            d.light1 = "${light_1}";
+            d.light1_name = "${light_1_name}";
+            d.light1_icon = "${light_1_icon}";
+            d.light2 = "${light_2}";
+            d.light2_name = "${light_2_name}";
+            d.light2_icon = "${light_2_icon}";
+            d.room = "${room_name}";
+            d.ha_url = "${ha_base_url}";
+            d.font_set = "${font_set}";
+            sticky::load();
+            sticky::apply_to_ui();
+            sticky::poster() = id(poster);
+            // Subscribe to the chosen entities before the API connects.
+            sticky::subscribe(api::global_api_server);
+            // Bridge from the shared input code (remote_ui.h) to the HA scripts below.
+            struct EspActions : remote_ui::Actions {
+              void click() override { id(beep).execute(); }
+              void toggle_light(int i) override {
+                if (i == 0) id(toggle_light_1).execute(); else id(toggle_light_2).execute();
+              }
+              void atv_power(bool on) override {
+                if (on) id(atv_turn_on).execute(); else id(atv_turn_off).execute();
+              }
+              void play_pause() override { id(atv_play_pause).execute(); }
+              void seek(float s) override { id(atv_seek).execute(s); }
+              void remote_command(const char *c) override { id(atv_remote).execute(std::string(c)); }
+              void volume(bool up) override {
+                if (up) id(atv_volume_up).execute(); else id(atv_volume_down).execute();
+              }
+              void open_infuse() override { id(atv_open_infuse).execute(); }
+            };
+            static EspActions esp_actions;
+            remote_ui::actions() = &esp_actions;
+    # After setup: the setup screens need the hotspot's name and password,
+    # and the QR code that joins it (WIFI: URI, read by phone cameras).
+    - priority: -100
+      then:
+        - lambda: |-
+            auto ap = wifi::global_wifi_component->get_ap();
+            const std::string ssid(ap.get_ssid().c_str()), pass(ap.get_password().c_str());
+            remote_ui::set_setup_info(App.get_name().c_str(), ssid, pass);
+            remote_ui::apply("setup_url", "${setup_url}");
+            id(wifi_qr).set_value(remote_ui::wifi_qr_text(ssid, pass));
+            remote_ui::wifi_qr() = id(wifi_qr);
+            remote_ui::set_ha_paired(id(ha_paired));
+            // Announce ourselves on the USB line for setup tools.
+            sticky::send_line(sticky::info("hello"));
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 32MB
+  framework:
+    type: esp-idf
+    advanced:
+      # Required by ESPHome for OTA on 32 MB flash.
+      enable_idf_experimental_features: true
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Serial goes through the CH343 USB-UART bridge, not native USB.
+logger:
+  hardware_uart: UART0
+
+# Wi-Fi: wifi-builtin.yaml (network from secrets.yaml) or wifi-setup.yaml
+# (set up on the device). Either way, when the Sticky can't connect it opens
+# the "${setup_ssid}" hotspot: join it (the panel shows a QR code), and the
+# captive portal page lets you pick a network. Improv over USB works too.
+packages:
+  wifi: !include wifi-${wifi_mode}.yaml
+
+captive_portal:
+
+# JSON for the USB setup protocol (sticky_device.h). It replaces Improv: both
+# would read the same serial line.
+json:
+
+# The setup screen's "join this hotspot" QR code; its value is set at boot.
+qr_code:
+  - id: wifi_qr
+    value: "WIFI:T:nopass;S:${setup_ssid};;"
+
+api:
+  # No key compiled in: Home Assistant sends one when the Sticky is added, and
+  # the Sticky keeps it (only a factory reset removes it). That's what lets
+  # one firmware fit every home.
+  encryption: {}
+  # Never reboot because HA is unreachable: it is a remote, not a server.
+  reboot_timeout: 0s
+  homeassistant_services: true
+  homeassistant_states: true
+  on_client_connected:
+    - lambda: |-
+        remote_ui::model().online = true;
+        remote_ui::set_ha_paired(true);
+        id(ha_paired) = true;   // remembered: no more "Add to Home Assistant" screen
+  on_client_disconnected:
+    - lambda: |-
+        remote_ui::model().online = false;
+        remote_ui::request();
+
+ota:
+  - platform: esphome
+    password: "${ota_password}"
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+globals:
+  # Set once Home Assistant has connected; until then the Sticky shows how to add it.
+  - id: ha_paired
+    type: bool
+    restore_value: true
+    initial_value: "false"
+  - id: last_activity
+    type: uint32_t
+    initial_value: "0"
+  - id: last_tap
+    type: uint32_t
+    initial_value: "0"
+
+# --- Buses ---------------------------------------------------------------------
+spi:
+  clk_pin: GPIO13
+  mosi_pin: GPIO14
+  miso_pin: GPIO12
+
+i2c:
+  - id: i2c_sensor          # BQ27220 fuel gauge, SHT40, IMU, RTC
+    scl: GPIO0
+    sda: GPIO1
+    frequency: 400kHz
+  - id: i2c_touch           # GT911
+    scl: GPIO2
+    sda: GPIO3
+    frequency: 100kHz
+
+# --- Power, charger, buzzer ---------------------------------------------------------
+output:
+  - platform: gpio
+    pin: GPIO45
+    id: pwr_hold
+  - platform: gpio
+    pin: GPIO46
+    id: pwr_lock
+  - platform: gpio
+    pin:
+      number: GPIO39
+      inverted: true
+    id: charge_enable
+  - platform: gpio
+    pin: GPIO8
+    id: sd_cs_idle
+  - platform: ledc
+    pin: GPIO48
+    id: buzzer
+    frequency: 2700Hz
+
+switch:
+  - platform: gpio
+    pin: GPIO42
+    id: touch_power
+    internal: true
+    restore_mode: ALWAYS_ON
+    setup_priority: 1100     # before the GT911 initialises
+
+deep_sleep:
+  id: deep_sleep_ctl
+  # USB plugged in while asleep wakes it and keeps it awake.
+  wakeup_pin:
+    number: GPIO9
+    allow_other_uses: true
+    mode: INPUT
+  wakeup_pin_mode: KEEP_AWAKE
+  # Any of the three buttons wakes it.
+  esp32_ext1_wakeup:
+    mode: ANY_LOW
+    pins:
+      - number: GPIO4
+        allow_other_uses: true
+      - number: GPIO5
+        allow_other_uses: true
+      - number: GPIO6
+        allow_other_uses: true
+
+# --- Battery ------------------------------------------------------------------------
+# (Home Assistant values come from runtime subscriptions: sticky_device.h.)
+sensor:
+  - platform: template
+    id: battery_level
+    name: Battery
+    unit_of_measurement: "%"
+    device_class: battery
+    accuracy_decimals: 0
+    update_interval: 60s
+    # BQ27220 @0x55, StateOfCharge register 0x2C (little endian).
+    lambda: |-
+      uint8_t reg = 0x2C;
+      uint8_t raw[2] = {0, 0};
+      if (id(i2c_sensor).write_readv(0x55, &reg, 1, raw, 2) != esphome::i2c::ERROR_OK) return NAN;
+      const uint16_t soc = raw[0] | (raw[1] << 8);
+      return soc <= 100 ? (float) soc : NAN;
+    on_value:
+      - lambda: |-
+          auto &m = remote_ui::model();
+          if (std::isnan(m.battery) || (int) m.battery != (int) x) remote_ui::request();
+          m.battery = x;
+
+binary_sensor:
+  - platform: gpio
+    id: usb_power
+    pin:
+      number: GPIO9
+      allow_other_uses: true
+      mode: INPUT
+    on_state:
+      - lambda: |-
+          remote_ui::model().usb = x;
+          id(last_activity) = millis();
+          remote_ui::request();
+
+  # Physical buttons: AI/power = play/pause (hold = sleep now), up/down = volume.
+  # A press that just woke the device only wakes it.
+  - platform: gpio
+    id: button_ai
+    pin:
+      number: GPIO4
+      allow_other_uses: true
+      mode: INPUT_PULLUP
+      inverted: true
+    on_multi_click:
+      - timing:
+          - ON for at most 800ms
+          - OFF for at least 50ms
+        then:
+          - lambda: |-
+              id(last_activity) = millis();
+              if (millis() < 2000) return;   // the press that woke it
+              auto t = id(ha_time).now();
+              remote_ui::handle_button(remote_ui::BTN_AI, t.is_valid() ? t.timestamp : 0,
+                                       *remote_ui::actions());
+      - timing:
+          - ON for at least 1.5s
+        then:
+          - script.execute: go_to_sleep
+  - platform: gpio
+    id: button_up
+    pin:
+      number: GPIO5
+      allow_other_uses: true
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      - lambda: |-
+          id(last_activity) = millis();
+          if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_UP, 0, *remote_ui::actions());
+  - platform: gpio
+    id: button_down
+    pin:
+      number: GPIO6
+      allow_other_uses: true
+      mode: INPUT_PULLUP
+      inverted: true
+    on_press:
+      - lambda: |-
+          id(last_activity) = millis();
+          if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
+
+# --- Actions sent to Home Assistant -------------------------------------------------------
+script:
+  - id: beep
+    mode: restart
+    then:
+      - output.set_level:
+          id: buzzer
+          level: 50%
+      - delay: 25ms
+      - output.set_level:
+          id: buzzer
+          level: 0%
+
+  - id: toggle_light_1
+    then:
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: !lambda "return sticky::settings().light1;"
+  - id: toggle_light_2
+    then:
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: !lambda "return sticky::settings().light2;"
+
+  - id: atv_turn_on
+    then:
+      - homeassistant.action:
+          action: media_player.turn_on
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+  - id: atv_turn_off
+    then:
+      - homeassistant.action:
+          action: media_player.turn_off
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+  - id: atv_play_pause
+    then:
+      - homeassistant.action:
+          action: media_player.media_play_pause
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+  - id: atv_seek
+    parameters:
+      pos: float
+    then:
+      - homeassistant.action:
+          action: media_player.media_seek
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+            seek_position: !lambda 'return esphome::to_string((int) pos);'
+  # Remote keys (up/down/left/right/select/menu/home), and the skip fallback
+  # when HA reports no position (skip_forward/backward: the app picks the step).
+  - id: atv_remote
+    mode: queued
+    parameters:
+      command: string
+    then:
+      - homeassistant.action:
+          action: remote.send_command
+          data:
+            entity_id: !lambda "return sticky::settings().remote;"
+            command: !lambda 'return command;'
+  - id: atv_volume_up
+    then:
+      - homeassistant.action:
+          action: media_player.volume_up
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+  - id: atv_volume_down
+    then:
+      - homeassistant.action:
+          action: media_player.volume_down
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+  - id: atv_open_infuse
+    then:
+      - homeassistant.action:
+          action: media_player.select_source
+          data:
+            entity_id: !lambda "return sticky::settings().player;"
+            source: !lambda "return sticky::settings().app;"
+
+  # Leave a "press a button" face on the panel, freeze the power latch, sleep.
+  - id: go_to_sleep
+    mode: single
+    then:
+      - logger.log: Going to deep sleep
+      - lambda: |-
+          remote_ui::model().sleeping = true;
+          remote_ui::request(true);
+      - wait_until:
+          condition:
+            lambda: 'return !remote_ui::redraw().dirty;'
+          timeout: 5s
+      - delay: 500ms
+      - wait_until:
+          condition:
+            lambda: 'return !id(epd).is_updating();'
+          timeout: 20s
+      - lambda: 'remote_ui::hold_pins_for_sleep();'
+      - deep_sleep.enter: deep_sleep_ctl
+
+interval:
+  # USB setup protocol: read the serial line often (its buffer is small).
+  - interval: 10ms
+    then:
+      - lambda: 'sticky::poll();'
+
+  # Refresh scheduler: one e-paper update at a time, only when the panel is idle.
+  - interval: 100ms
+    then:
+      - lambda: |-
+          remote_ui::feedback_tick();   // clears the pad's pressed look
+          if (id(epd).is_updating()) return;
+          bool full = false;
+          if (!remote_ui::take_refresh(remote_ui::model(), full)) return;
+          if (full) id(epd).request_full_update();
+          id(epd).update();
+
+  # Seek bar and clock move once a minute: redraw only when what is shown changes.
+  - interval: 5s
+    then:
+      - lambda: |-
+          auto t = id(ha_time).now();
+          remote_ui::minute_tick(t.is_valid(), t.hour, t.minute, t.timestamp);
+
+  # Network state for the setup screens (hotspot active, connected, address).
+  - interval: 1s
+    then:
+      - lambda: |-
+          auto *w = wifi::global_wifi_component;
+          std::string ip;
+          if (w->is_connected())
+            for (auto &a : w->get_ip_addresses())
+              if (a.is_set() && a.is_ip4()) {
+                char buf[network::IP_ADDRESS_BUFFER_SIZE];
+                ip = a.str_to(buf);
+                break;
+              }
+          remote_ui::set_network(w->is_connected(), w->is_ap_active(), ip);
+
+  # Sleep after a quiet spell, on battery only.
+  - interval: 5s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              // Setup screens (hotspot, pairing) get much longer: they need it awake.
+              const auto &m = remote_ui::model();
+              const uint32_t limit = m.in_setup() ? ${setup_sleep_after_ms} : ${sleep_after_ms};
+              return !id(usb_power).state && !m.sleeping && millis() - id(last_activity) > limit;
+          then:
+            - script.execute: go_to_sleep
+
+# --- Artwork ---------------------------------------------------------------------------------
+http_request:
+  timeout: 10s
+  # The proxy URL carries its own token; never follow a redirect elsewhere.
+  follow_redirects: false
+
+image:
+  - platform: online_image
+    id: poster
+    url: http://127.0.0.1/   # set at runtime from the settings' HA address
+    format: AUTO
+    type: GRAYSCALE
+    update_interval: never
+    on_download_finished:
+      - lambda: |-
+          remote_ui::model().poster_loaded = true;
+          remote_ui::request(true);
+    on_error:
+      - lambda: |-
+          remote_ui::model().poster_loaded = false;
+          remote_ui::request();
+
+# --- Touch ------------------------------------------------------------------------------------
+touchscreen:
+  - platform: gt911
+    id: touch
+    i2c_id: i2c_touch
+    display: epd
+    interrupt_pin: GPIO21
+    reset_pin: GPIO41
+    transform:
+      swap_xy: ${touch_swap_xy}
+      mirror_x: ${touch_mirror_x}
+      mirror_y: ${touch_mirror_y}
+    on_touch:
+      - lambda: |-
+          const uint32_t now_ms = millis();
+          id(last_activity) = now_ms;
+          ESP_LOGD("touch", "x=%d y=%d", touch.x, touch.y);
+          if (now_ms - id(last_tap) < 350) return;   // debounce
+          id(last_tap) = now_ms;
+          auto t = id(ha_time).now();
+          remote_ui::handle_tap(touch.x, touch.y, t.is_valid() ? t.timestamp : 0, *remote_ui::actions());
+
+# --- Display --------------------------------------------------------------------------------
+font:
+  # Both typefaces are built in; the settings pick one (font_set).
+  # Inter Bold
+  - file: fonts/Inter-Bold.ttf
+    id: t18
+    size: 18
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/Inter-Bold.ttf
+    id: t20
+    size: 20
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/Inter-Bold.ttf
+    id: t22
+    size: 22
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/Inter-Bold.ttf
+    id: t26
+    size: 26
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/Inter-Bold.ttf
+    id: t30
+    size: 30
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  # TRMNL (e-paper pixel fonts)
+  - file: fonts/trmnl/TRMNL21-Regular.ttf
+    id: r18
+    size: 21
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/trmnl/TRMNL21-Regular.ttf
+    id: r20
+    size: 21
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/trmnl/TRMNL21-Bold.ttf
+    id: r22
+    size: 21
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/trmnl/TRMNL12-Bold.ttf
+    id: r26
+    size: 24
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/trmnl/TRMNL16-Bold.ttf
+    id: r30
+    size: 32
+    glyphsets: [GF_Latin_Core]
+    glyphs: ["…·–"]
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: i24
+    size: 24
+    glyphs: ["\U000F05A9", "\U000F05AA", "\U000F040A", "\U000F03E4", "\U000F16C7"]  # wifi, wifi-off, play, pause, wifi-sync
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: i40
+    size: 40
+    # vol -, vol +, power, sleep, back, tv, movie, play-pause
+    glyphs: ["\U000F075E", "\U000F075D", "\U000F0425", "\U000F04B2", "\U000F17B3", "\U000F0502", "\U000F0FCF", "\U000F040E"]
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: i52
+    size: 52
+    # star, ceiling light, bulb, floor lamp (on/off each), power, play, pause
+    glyphs: ["\U000F0AE2", "\U000F0AE3", "\U000F0769", "\U000F17C7", "\U000F0335", "\U000F0336", "\U000F08DD", "\U000F17C8", "\U000F0425", "\U000F040A", "\U000F03E4"]
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: i64
+    size: 64
+    # rewind-10, fast-forward-10, chevron up/down/left/right
+    glyphs: ["\U000F0D2A", "\U000F0D71", "\U000F0143", "\U000F0140", "\U000F0141", "\U000F0142"]
+  - file: fonts/materialdesignicons-webfont.ttf
+    id: i120
+    size: 120
+    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0"]       # movie, tv-off, home-assistant
+
+display:
+  - platform: epaper_spi
+    id: epd
+    model: seeed-reterminal-sticky
+    rotation: ${rotation}
+    update_interval: never
+    # Partial updates by default; the scheduler asks for a full one when the
+    # layout changes, on new artwork, and every 20 partials.
+    full_update_every: 255
+    lambda: |-
+      static const remote_ui::Fonts inter{id(t18), id(t20), id(t22), id(t26), id(t30),
+                                          id(i24), id(i40), id(i52), id(i64), id(i120)};
+      static const remote_ui::Fonts trmnl{id(r18), id(r20), id(r22), id(r26), id(r30),
+                                          id(i24), id(i40), id(i52), id(i64), id(i120)};
+      remote_ui::Ctx c{it, sticky::trmnl() ? trmnl : inter};
+      auto t = id(ha_time).now();
+      remote_ui::render(c, id(poster), t.is_valid() ? t.timestamp : 0, t.is_valid(), t.hour, t.minute,
+                        sticky::labels());

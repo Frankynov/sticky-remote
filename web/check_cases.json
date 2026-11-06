@@ -1,0 +1,13 @@
+{
+  "inter-two": {"set": "inter", "room": "Salon", "clock": "20:30", "app": "Infuse",
+    "lights": [{"label": "Étoile", "icon": "star", "on": false},
+               {"label": "Luminaire", "icon": "ceiling", "on": true, "brightness": 158}],
+    "player": {"label": "Apple TV", "on": true}},
+  "trmnl-one-long": {"set": "trmnl", "room": "Living room with a very long name indeed", "clock": "9:05", "app": "Netflix",
+    "lights": [{"label": "Floor lamp in the corner by the sofa", "icon": "floor", "on": true}],
+    "player": {"label": "Salon Apple TV 4K", "on": true}},
+  "inter-offline": {"set": "inter", "room": "Bureau", "clock": "13:47", "app": "",
+    "lights": [{"label": "Desk", "icon": "bulb", "on": true, "brightness": 255},
+               {"label": "Shelf", "icon": "bulb", "on": false, "offline": true}],
+    "player": {"label": "TV", "on": true}}
+}

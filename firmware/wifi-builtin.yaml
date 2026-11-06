@@ -1,0 +1,15 @@
+# Wi-Fi mode "builtin" (default): the network from secrets.yaml is compiled in.
+# A network chosen later on the Sticky's setup hotspot is saved on the device
+# and takes priority. Selected by the wifi_mode substitution.
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Waking from deep sleep is a cold boot: skip the scan to reconnect faster.
+  fast_connect: true
+  reboot_timeout: 0s
+  ap:
+    # Open (no password), as most ESP devices do: it only runs while the
+    # Sticky can't connect, and its screen shows how to join it.
+    ssid: ${setup_ssid}
+    # Can't reach the network for this long: open the setup hotspot.
+    ap_timeout: 30s

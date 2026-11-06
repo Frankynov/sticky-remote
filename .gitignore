@@ -1,0 +1,14 @@
+# Secrets and personal settings never go to git
+firmware/secrets.yaml
+firmware/my-*.yaml
+
+# Build output
+firmware/.esphome/
+engine/build/
+build/
+.build/
+web/firmware/*.bin
+__pycache__/
+*.pyc
+.DS_Store
+.swiftpm/

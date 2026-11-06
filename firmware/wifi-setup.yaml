@@ -1,0 +1,10 @@
+# Wi-Fi mode "setup": no network compiled in. The Sticky opens its setup
+# hotspot straight away; the network chosen there is saved on the device.
+# Selected by the wifi_mode substitution (Prepare & Flash › Wi-Fi).
+wifi:
+  reboot_timeout: 0s
+  ap:
+    # Open (no password), as most ESP devices do: it only runs while the
+    # Sticky can't connect, and its screen shows how to join it.
+    ssid: ${setup_ssid}
+    ap_timeout: 30s

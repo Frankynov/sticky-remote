@@ -1,0 +1,20 @@
+# Sticky Remote setup page (https://frankynov.ovh/sticky/)
+# Same privacy rules as the page's own policy, sent as real headers, plus
+# "no framing". If your host answers 500 with this file, delete it: the page
+# keeps its built-in policy.
+Options -Indexes
+AddType text/javascript .js
+AddType application/octet-stream .bin
+<IfModule mod_headers.c>
+  Header set Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; connect-src 'self' wss: ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  Header set Referrer-Policy "no-referrer"
+  Header set X-Content-Type-Options "nosniff"
+  Header set Permissions-Policy "serial=(self), usb=(), camera=(), microphone=(), geolocation=()"
+  # Browsers recheck every file (an unchanged one costs a "304"), so a new
+  # version never mixes with cached old scripts. The firmware's file name
+  # carries its version, so it can be cached for good.
+  Header set Cache-Control "no-cache"
+  <FilesMatch "\.bin$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+</IfModule>

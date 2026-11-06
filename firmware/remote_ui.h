@@ -1,0 +1,1283 @@
+#pragma once
+// Sticky Remote: drawing, hit-testing and state for the reTerminal Sticky.
+//
+// Portrait 480x800, pure 1-bit. Geometry mirrors design/mockup.py: change one,
+// change the other. On this panel COLOR_ON is paper (white) and COLOR_OFF is
+// ink (black).
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <string>
+
+#include "esphome/components/display/display.h"
+#include "esphome/components/qr_code/qr_code.h"
+#include "esphome/components/runtime_image/runtime_image.h"
+#include "esphome/core/color.h"
+#include "esphome/core/hal.h"
+#include "esphome/core/log.h"
+
+#include "driver/gpio.h"
+#include "driver/rtc_io.h"
+#include "esp_sleep.h"
+
+namespace remote_ui {
+
+using esphome::Color;
+using esphome::display::BaseFont;
+using esphome::display::Display;
+using esphome::display::TextAlign;
+
+// --- Layout (keep in sync with design/mockup.py) ----------------------------
+constexpr int W = 480, H = 800;
+constexpr int M = 14;
+constexpr int STATUS_H = 36;
+constexpr int TILE_Y = 44, TILE_H = 128, TILE_W = 140, TILE_GAP = 16;
+constexpr int TAB_Y = 184, TAB_H = 40;                               // "Now playing | Remote"
+constexpr int POSTER_Y = 238, POSTER_H = 256, POSTER_W = W - 2 * 20;  // contain-fit box
+constexpr int TITLE_Y = 506, SUB_Y = 544;
+constexpr int SEEK_Y = 582, SEEK_H = 14, TIME_Y = 602;
+constexpr int SEEK_X0 = M + 10, SEEK_X1 = W - M - 10;
+constexpr int TRANSPORT_CY = 672, PLAY_R = 42, SKIP_DX = 130;
+constexpr int VOL_Y = 724, VOL_H = 62, VOL_BTN_W = 100;
+constexpr int BIG_BTN_W = 300, BIG_BTN_H = 72, BIG_BTN_Y = 610;
+constexpr float SKIP_SECONDS = 10.0f;
+// Remote page
+constexpr int PAD_CX = 240, PAD_CY = 404, PAD_R = 158, PAD_R_IN = 60;
+constexpr int KEY_Y = 580, KEY_H = 72, KEY_W = 104, KEY_GAP = 12;
+constexpr int MINI_Y = 664, MINI_H = 48;
+
+// The top row: the light tiles (one or two) and the player's power tile.
+inline int tile_count(int lights) { return lights + 1; }
+inline int tile_w(int n) { return (W - 2 * M - (n - 1) * TILE_GAP) / n; }
+inline int tile_x(int i, int n) { return M + i * (tile_w(n) + TILE_GAP); }
+
+// Material Design Icons code points (same glyph lists as the YAML fonts).
+#define ICON_BULB_ON "\U000F0335"
+#define ICON_BULB_OFF "\U000F0336"
+#define ICON_FLOOR_ON "\U000F08DD"
+#define ICON_FLOOR_OFF "\U000F17C8"
+#define ICON_STAR_ON "\U000F0AE2"
+#define ICON_STAR_OFF "\U000F0AE3"
+#define ICON_CEILING_ON "\U000F0769"
+#define ICON_CEILING_OFF "\U000F17C7"
+#define ICON_POWER "\U000F0425"
+#define ICON_PLAY "\U000F040A"
+#define ICON_PAUSE "\U000F03E4"
+#define ICON_REW "\U000F0D2A"
+#define ICON_FF "\U000F0D71"
+#define ICON_VOL_MINUS "\U000F075E"
+#define ICON_VOL_PLUS "\U000F075D"
+#define ICON_WIFI "\U000F05A9"
+#define ICON_WIFI_OFF "\U000F05AA"
+#define ICON_TV_OFF "\U000F083B"
+#define ICON_MOVIE "\U000F0FCF"
+#define ICON_SLEEP "\U000F04B2"
+#define ICON_UP "\U000F0143"
+#define ICON_DOWN "\U000F0140"
+#define ICON_LEFT "\U000F0141"
+#define ICON_RIGHT "\U000F0142"
+#define ICON_BACK "\U000F17B3"
+#define ICON_TV "\U000F0502"
+#define ICON_PLAY_PAUSE "\U000F040E"
+#define ICON_HOME_ASSISTANT "\U000F07D0"
+#define ICON_WIFI_SYNC "\U000F16C7"
+
+// --- State ------------------------------------------------------------------
+struct Light {
+  std::string state;          // "on" / "off" / "unavailable" / "" (unknown)
+  float brightness = NAN;     // 0..255 from HA
+  bool on() const { return state == "on"; }
+  bool known() const { return state == "on" || state == "off"; }
+  int percent() const {
+    if (!on() || std::isnan(brightness)) return -1;
+    return (int) lroundf(brightness * 100.0f / 255.0f);
+  }
+};
+
+enum class Mode { OFF, IDLE, PLAYING };
+// Network as the setup screens see it.
+enum class Net : uint8_t { CONNECTING, CONNECTED, HOTSPOT };
+// Which onboarding screen replaces the remote, if any.
+enum class Setup : uint8_t { NONE, WIFI, CONFIGURE, HOME_ASSISTANT };
+// Light tile icons, by settings index.
+enum LightIcon : uint8_t { ICON_KIND_BULB = 0, ICON_KIND_CEILING = 1, ICON_KIND_FLOOR = 2, ICON_KIND_STAR = 3 };
+inline uint8_t light_icon_index(const std::string &name) {
+  if (name == "ceiling") return ICON_KIND_CEILING;
+  if (name == "floor") return ICON_KIND_FLOOR;
+  if (name == "star") return ICON_KIND_STAR;
+  return ICON_KIND_BULB;
+}
+// What the Remote page shows as pressed (on-screen feedback for pad and keys).
+enum class Press : uint8_t { NONE, UP, DOWN, LEFT, RIGHT, OK, KEY_BACK, KEY_HOME, KEY_INFUSE, KEY_PLAY };
+constexpr uint32_t PRESS_SHOW_MS = 700;  // feedback clears this long after the last press
+enum class Page { NOW, REMOTE };
+
+struct Model {
+  Light lights[2];
+  std::string atv_state;      // off / standby / idle / on / playing / paused
+  std::string title, series, artist, app, picture;
+  float season = NAN, episode = NAN;
+  float position = NAN, duration = NAN, volume = NAN;  // seconds, seconds, 0..1
+  int64_t position_at = -1;   // epoch seconds when `position` was true
+  bool poster_loaded = false;
+  bool sleeping = false;
+  bool online = false;
+  float battery = NAN;
+  bool usb = false;
+  Page page = Page::REMOTE;
+  bool state_seen = false;
+  Press pressed = Press::NONE;
+  uint32_t pressed_at = 0;
+
+  // What this Sticky controls (the device's settings; the simulator sets them too).
+  int light_count = 2;            // 1 or 2 light tiles
+  uint8_t light_icon[2] = {3, 1}; // see LightIcon
+  bool configured = true;         // false: nothing chosen yet, show "Finish setup"
+  std::string app_button = "Infuse";  // the app the Remote page's app key opens
+
+  // Onboarding
+  Net net = Net::CONNECTED;
+  std::string ip, device_name = "sticky-remote", ap_ssid = "Sticky-Remote", ap_password;
+  std::string setup_url = "the Sticky setup page";   // where to finish setup (web wizard)
+  bool ha_paired = true;   // the firmware loads the remembered value at boot
+
+  /// The setup hotspot is up: show how to join it. Connected to Wi-Fi but
+  /// never added to Home Assistant: show how to add it.
+  Setup setup() const {
+    if (net == Net::HOTSPOT) return Setup::WIFI;
+    if (!configured) return Setup::CONFIGURE;
+    if (net == Net::CONNECTED && !ha_paired && !online) return Setup::HOME_ASSISTANT;
+    return Setup::NONE;
+  }
+  bool in_setup() const { return setup() != Setup::NONE; }
+
+  Mode mode() const {
+    if (atv_state == "playing" || atv_state == "paused") return Mode::PLAYING;
+    if (atv_state == "on" || atv_state == "idle") return Mode::IDLE;
+    return Mode::OFF;
+  }
+  bool atv_on() const { return mode() != Mode::OFF; }
+};
+
+inline Model &model() {
+  static Model m;
+  return m;
+}
+
+// HA timestamps look like 2026-11-06T08:12:33.123456+00:00. Returns epoch
+// seconds, or -1 when the text does not parse.
+inline int64_t days_from_civil(int y, unsigned m, unsigned d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = (unsigned) (y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return (int64_t) era * 146097 + (int64_t) doe - 719468;
+}
+
+inline int64_t parse_iso8601(const std::string &s) {
+  int y, mo, d, h, mi, se;
+  if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return -1;
+  int64_t t = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
+  // Offset: the last "+HH:MM" / "-HH:MM" after the time, or Z.
+  const size_t tpos = s.find('T');
+  const size_t sign = s.find_first_of("+-", tpos);
+  if (sign != std::string::npos) {
+    int oh = 0, om = 0;
+    if (sscanf(s.c_str() + sign + 1, "%d:%d", &oh, &om) >= 1) {
+      const int off = oh * 3600 + om * 60;
+      t += s[sign] == '+' ? -off : off;
+    }
+  }
+  return t;
+}
+
+// Position extrapolated to `now` while playing (HA only refreshes it on state
+// changes). NAN when unknown.
+inline float live_position(const Model &m, int64_t now_epoch) {
+  if (std::isnan(m.position)) return NAN;
+  float p = m.position;
+  if (m.atv_state == "playing" && now_epoch > 0 && m.position_at > 0 && now_epoch > m.position_at)
+    p += (float) (now_epoch - m.position_at);
+  if (!std::isnan(m.duration) && m.duration > 0 && p > m.duration) p = m.duration;
+  return p < 0 ? 0 : p;
+}
+
+// HA sends "None" / "unknown" for attributes that are absent.
+inline std::string clean(const std::string &s) {
+  return (s == "None" || s == "unknown" || s == "unavailable") ? std::string() : s;
+}
+
+// --- Redraw queue ---------------------------------------------------------------
+// The e-paper update is asynchronous: requests coalesce here and the YAML
+// scheduler starts one refresh at a time, full when the layout changes.
+struct Redraw {
+  bool dirty = true, full = true;
+  uint32_t requested_at = 0;
+  int partials = 0;
+  int drawn_minute = -2, drawn_clock = -2;
+  Mode drawn_mode = Mode::OFF;
+  Page drawn_page = Page::REMOTE;
+  Setup drawn_setup = Setup::NONE;
+  bool drawn_once = false;
+};
+
+inline Redraw &redraw() {
+  static Redraw r;
+  return r;
+}
+
+inline void request(bool full = false) {
+  auto &r = redraw();
+  r.dirty = true;
+  r.full = r.full || full;
+  r.requested_at = esphome::millis();
+}
+
+// --- Onboarding state (fed by the firmware's Wi-Fi/API hooks) ----------------
+inline void set_network(bool connected, bool hotspot, const std::string &ip) {
+  auto &m = model();
+  const Net net = hotspot ? Net::HOTSPOT : connected ? Net::CONNECTED : Net::CONNECTING;
+  if (net == m.net && ip == m.ip) return;
+  const bool screen_changed = net != m.net || m.in_setup();
+  m.net = net;
+  m.ip = ip;
+  if (screen_changed) request();
+}
+
+inline void set_setup_info(const std::string &device, const std::string &ssid, const std::string &password) {
+  auto &m = model();
+  m.device_name = device;
+  m.ap_ssid = ssid;
+  m.ap_password = password;
+}
+
+inline void set_ha_paired(bool paired) {
+  auto &m = model();
+  if (m.ha_paired == paired) return;
+  m.ha_paired = paired;
+  request();
+}
+
+/// The QR code drawn on the Wi-Fi setup screen (owned by the firmware).
+inline esphome::qr_code::QrCode *&wifi_qr() {
+  static esphome::qr_code::QrCode *qr = nullptr;
+  return qr;
+}
+
+/// "WIFI:" URI that phone cameras offer to join (\ ; , : " escaped). An empty
+/// password makes it an open network ("T:nopass").
+inline std::string wifi_qr_text(const std::string &ssid, const std::string &password) {
+  auto esc = [](const std::string &v) {
+    std::string o;
+    for (char ch : v) {
+      if (ch == '\\' || ch == ';' || ch == ',' || ch == ':' || ch == '"') o += '\\';
+      o += ch;
+    }
+    return o;
+  };
+  if (password.empty()) return "WIFI:T:nopass;S:" + esc(ssid) + ";;";
+  return "WIFI:T:WPA;S:" + esc(ssid) + ";P:" + esc(password) + ";;";
+}
+
+// For touch feedback: skip the settle window so it shows as soon as the panel is free.
+inline void request_now() {
+  request();
+  redraw().requested_at = esphome::millis() - 1000;
+}
+
+// Shows `p` as pressed on the Remote page; feedback_tick() clears it.
+inline void press_feedback(Press p) {
+  auto &m = model();
+  m.pressed = p;
+  m.pressed_at = esphome::millis();
+  request_now();
+}
+
+// Called by the refresh scheduler: clears the pressed look once presses stop.
+inline void feedback_tick() {
+  auto &m = model();
+  if (m.pressed != Press::NONE && esphome::millis() - m.pressed_at > PRESS_SHOW_MS) {
+    m.pressed = Press::NONE;
+    request_now();
+  }
+}
+
+// Partial refreshes leave ghosting; clean with a full one every N of them.
+constexpr int FULL_EVERY = 20;
+
+// Called by the scheduler when the panel is idle. Returns true when a refresh
+// should start now, and whether it must be a full one.
+inline bool take_refresh(const Model &m, bool &full) {
+  auto &r = redraw();
+  if (!r.dirty) return false;
+  if (esphome::millis() - r.requested_at < 250) return false;  // let bursts settle
+  full = r.full || !r.drawn_once || m.mode() != r.drawn_mode || m.page != r.drawn_page ||
+         m.setup() != r.drawn_setup || r.partials >= FULL_EVERY;
+  r.partials = full ? 0 : r.partials + 1;
+  r.dirty = r.full = false;
+  r.drawn_mode = m.mode();
+  r.drawn_page = m.page;
+  r.drawn_setup = m.setup();
+  r.drawn_once = true;
+  return true;
+}
+
+// h:mm, minute resolution, so the bar needs at most one refresh a minute.
+inline void fmt_hm(char *buf, size_t n, float sec) {
+  if (std::isnan(sec) || sec < 0) {
+    snprintf(buf, n, "--:--");
+    return;
+  }
+  const int mins = (int) sec / 60;
+  snprintf(buf, n, "%d:%02d", mins / 60, mins % 60);
+}
+
+// The minute the seek bar shows; the YAML redraws when it changes.
+inline int shown_minute(const Model &m, int64_t now_epoch) {
+  const float p = live_position(m, now_epoch);
+  return std::isnan(p) ? -1 : (int) p / 60;
+}
+
+// --- Drawing helpers ----------------------------------------------------------
+struct Fonts {
+  BaseFont *t18, *t20, *t22, *t26, *t30;
+  BaseFont *i24, *i40, *i52, *i64, *i120;
+};
+
+struct Ctx {
+  Display &it;
+  const Fonts &f;
+  Color ink = esphome::display::COLOR_OFF;
+  Color paper = esphome::display::COLOR_ON;
+};
+
+inline void fill_rrect(Ctx &c, int x, int y, int w, int h, int r, Color col) {
+  r = std::min(r, std::min(w, h) / 2);
+  c.it.filled_rectangle(x + r, y, w - 2 * r, h, col);
+  c.it.filled_rectangle(x, y + r, r, h - 2 * r, col);
+  c.it.filled_rectangle(x + w - r, y + r, r, h - 2 * r, col);
+  c.it.filled_circle(x + r, y + r, r, col);
+  c.it.filled_circle(x + w - r - 1, y + r, r, col);
+  c.it.filled_circle(x + r, y + h - r - 1, r, col);
+  c.it.filled_circle(x + w - r - 1, y + h - r - 1, r, col);
+}
+
+// Outline of `t` px: an ink rounded rect with a paper one inside.
+inline void stroke_rrect(Ctx &c, int x, int y, int w, int h, int r, int t) {
+  fill_rrect(c, x, y, w, h, r, c.ink);
+  fill_rrect(c, x + t, y + t, w - 2 * t, h - 2 * t, std::max(0, r - t), c.paper);
+}
+
+inline int text_width(Ctx &c, BaseFont *f, const char *s) {
+  int x1, y1, w, h;
+  c.it.get_text_bounds(0, 0, s, f, TextAlign::TOP_LEFT, &x1, &y1, &w, &h);
+  return w;
+}
+
+// Draw s centred at (x, y), shortened with an ellipsis to fit max_w.
+inline void print_fit(Ctx &c, int x, int y, BaseFont *f, Color col, TextAlign a, const std::string &s,
+                      int max_w) {
+  std::string out = s;
+  if (text_width(c, f, out.c_str()) > max_w) {
+    while (!out.empty()) {
+      // drop one UTF-8 code point from the end
+      size_t cut = out.size() - 1;
+      while (cut > 0 && (out[cut] & 0xC0) == 0x80) cut--;
+      out.erase(cut);
+      if (text_width(c, f, (out + "…").c_str()) <= max_w) break;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    out += "…";
+  }
+  c.it.print(x, y, f, col, a, out.c_str());
+}
+
+// --- Poster: contain-fit, bilinear, serpentine Floyd-Steinberg ---------------
+inline const uint8_t *gray_buffer(esphome::runtime_image::RuntimeImage *img) {
+  struct Access : esphome::runtime_image::RuntimeImage {
+    using esphome::runtime_image::RuntimeImage::buffer_;
+  };
+  return static_cast<Access *>(img)->buffer_;
+}
+
+// Draws the artwork centred in the poster box; returns its drawn rectangle so
+// the caller can frame it.
+inline void draw_poster(Ctx &c, esphome::runtime_image::RuntimeImage *img, int &ox, int &oy, int &dw,
+                        int &dh) {
+  const uint8_t *buf = gray_buffer(img);
+  const int sw = img->get_buffer_width(), sh = img->get_buffer_height();
+  dw = dh = 0;
+  if (buf == nullptr || sw < 2 || sh < 2) return;
+  const float scale = std::min((float) POSTER_W / sw, (float) POSTER_H / sh);
+  dw = std::max(1, (int) (sw * scale));
+  dh = std::max(1, (int) (sh * scale));
+  ox = (W - dw) / 2;
+  oy = POSTER_Y + (POSTER_H - dh) / 2;
+
+  // Error rows scaled by 16, +2 guard on each side.
+  static int16_t err[2][POSTER_W + 4];
+  memset(err, 0, sizeof err);
+  for (int y = 0; y < dh; y++) {
+    int16_t *cur = err[y & 1], *nxt = err[(y + 1) & 1];
+    memset(nxt, 0, sizeof err[0]);
+    float sy = (y + 0.5f) / scale - 0.5f;
+    sy = std::max(0.0f, std::min(sy, sh - 1.001f));
+    const int y0 = (int) sy;
+    const float fy = sy - y0;
+    const uint8_t *r0 = buf + (size_t) y0 * sw, *r1 = r0 + sw;
+    const bool ltr = (y & 1) == 0;
+    for (int i = 0; i < dw; i++) {
+      const int x = ltr ? i : dw - 1 - i;
+      float sx = (x + 0.5f) / scale - 0.5f;
+      sx = std::max(0.0f, std::min(sx, sw - 1.001f));
+      const int x0 = (int) sx;
+      const float fx = sx - x0;
+      const float g = (1 - fy) * ((1 - fx) * r0[x0] + fx * r0[x0 + 1]) +
+                      fy * ((1 - fx) * r1[x0] + fx * r1[x0 + 1]);
+      const int e_i = x + 2;
+      const float v = g + cur[e_i] / 16.0f;
+      const bool black = v < 128.0f;
+      c.it.draw_pixel_at(ox + x, oy + y, black ? c.ink : c.paper);
+      const int e = (int) (v - (black ? 0.0f : 255.0f));
+      const int fwd = ltr ? 1 : -1;
+      cur[e_i + fwd] += e * 7;
+      nxt[e_i - fwd] += e * 3;
+      nxt[e_i] += e * 5;
+      nxt[e_i + fwd] += e;
+    }
+  }
+}
+
+// --- Screen parts -------------------------------------------------------------
+// Status bar. While the network comes up (seconds after each wake) the room
+// name gives way to what's happening: joining Wi-Fi, then reaching HA.
+inline void draw_status(Ctx &c, const Model &m, const char *room, bool time_valid, int hour, int minute) {
+  const int cy = STATUS_H / 2;
+  int x = W - M;
+  char buf[16];
+  if (time_valid) {
+    snprintf(buf, sizeof buf, "%d:%02d", hour, minute);
+    c.it.print(x, cy, c.f.t20, c.ink, TextAlign::CENTER_RIGHT, buf);
+    x -= text_width(c, c.f.t20, buf) + 14;
+  }
+  if (!std::isnan(m.battery)) {
+    snprintf(buf, sizeof buf, m.usb ? "%d%% +" : "%d%%", (int) m.battery);
+    c.it.print(x, cy, c.f.t20, c.ink, TextAlign::CENTER_RIGHT, buf);
+    x -= text_width(c, c.f.t20, buf) + 8;
+  }
+  const bool wifi = m.net == Net::CONNECTED;
+  c.it.print(x, cy + 1, c.f.i24, c.ink, TextAlign::CENTER_RIGHT,
+             wifi ? ICON_WIFI : ICON_WIFI_SYNC);   // HA state is in the text
+  x -= 24 + 12;
+  const char *left = !wifi ? "Joining Wi-Fi…" : !m.online ? "Connecting to HA…" : room;
+  print_fit(c, M, cy, c.f.t20, c.ink, TextAlign::CENTER_LEFT, left, x - M);
+}
+
+inline void draw_tile(Ctx &c, int i, int n, const char *label, const char *icon, const char *state, bool on,
+                      bool known) {
+  const int x = tile_x(i, n), w = tile_w(n), r = 14;
+  if (on) {
+    fill_rrect(c, x, TILE_Y, w, TILE_H, r, c.ink);
+  } else {
+    stroke_rrect(c, x, TILE_Y, w, TILE_H, r, 3);
+  }
+  const Color fg = on ? c.paper : c.ink;
+  const int cx = x + w / 2;
+  c.it.print(cx, TILE_Y + 42, c.f.i52, fg, TextAlign::CENTER, icon);
+  print_fit(c, cx, TILE_Y + 88, c.f.t22, fg, TextAlign::CENTER, label, w - 12);
+  c.it.print(cx, TILE_Y + 110, c.f.t18, fg, TextAlign::CENTER, known ? state : "…");
+}
+
+inline const char *light_icon(uint8_t kind, bool on) {
+  switch (kind) {
+    case ICON_KIND_CEILING: return on ? ICON_CEILING_ON : ICON_CEILING_OFF;
+    case ICON_KIND_FLOOR: return on ? ICON_FLOOR_ON : ICON_FLOOR_OFF;
+    case ICON_KIND_STAR: return on ? ICON_STAR_ON : ICON_STAR_OFF;
+    default: return on ? ICON_BULB_ON : ICON_BULB_OFF;
+  }
+}
+
+inline void draw_light_tile(Ctx &c, int i, int n, const Light &l, const char *label, uint8_t icon) {
+  char buf[16];
+  const int pct = l.percent();
+  if (l.on())
+    pct >= 0 ? snprintf(buf, sizeof buf, "%d %%", pct) : snprintf(buf, sizeof buf, "On");
+  else
+    snprintf(buf, sizeof buf, l.state == "unavailable" ? "Offline" : "Off");
+  draw_tile(c, i, n, label, light_icon(icon, l.on()), buf, l.on(), l.known() || l.state == "unavailable");
+}
+
+inline void draw_tiles(Ctx &c, const Model &m, const char *name1, const char *name2, const char *player) {
+  const int n = tile_count(m.light_count);
+  draw_light_tile(c, 0, n, m.lights[0], name1, m.light_icon[0]);
+  if (m.light_count > 1) draw_light_tile(c, 1, n, m.lights[1], name2, m.light_icon[1]);
+  draw_tile(c, n - 1, n, player, ICON_POWER, m.atv_on() ? "On" : "Off", m.atv_on(), !m.atv_state.empty());
+}
+
+inline void draw_volume(Ctx &c, const Model &m) {
+  const int y = VOL_Y, h = VOL_H, cy = y + h / 2;
+  stroke_rrect(c, M, y, W - 2 * M, h, h / 2, 3);
+  c.it.print(M + 50, cy, c.f.i40, c.ink, TextAlign::CENTER, ICON_VOL_MINUS);
+  c.it.print(W - M - 50, cy, c.f.i40, c.ink, TextAlign::CENTER, ICON_VOL_PLUS);
+  c.it.filled_rectangle(M + VOL_BTN_W - 1, y + 10, 2, h - 20, c.ink);
+  c.it.filled_rectangle(W - M - VOL_BTN_W - 1, y + 10, 2, h - 20, c.ink);
+  if (std::isnan(m.volume)) {
+    c.it.print(W / 2, cy, c.f.t22, c.ink, TextAlign::CENTER, "Volume");
+    return;
+  }
+  constexpr int n = 10, seg = 17, gap = 5;
+  const int left = (W - (n * seg + (n - 1) * gap)) / 2;
+  const int lit = (int) lroundf(m.volume * n);
+  const int y1 = cy + 15;
+  for (int i = 0; i < n; i++) {
+    const int x0 = left + i * (seg + gap), hh = 10 + 2 * i;
+    if (i < lit) {
+      c.it.filled_rectangle(x0, y1 - hh, seg, hh + 1, c.ink);
+    } else {
+      c.it.filled_rectangle(x0, y1 - hh, seg, hh + 1, c.ink);
+      c.it.filled_rectangle(x0 + 2, y1 - hh + 2, seg - 4, hh - 3, c.paper);
+    }
+  }
+}
+
+inline void draw_big_button(Ctx &c, const char *label, const char *icon) {
+  const int x = (W - BIG_BTN_W) / 2;
+  fill_rrect(c, x, BIG_BTN_Y, BIG_BTN_W, BIG_BTN_H, BIG_BTN_H / 2, c.ink);
+  const int cy = BIG_BTN_Y + BIG_BTN_H / 2;
+  if (icon == nullptr) {
+    c.it.print(W / 2, cy, c.f.t26, c.paper, TextAlign::CENTER, label);
+    return;
+  }
+  const int tw = text_width(c, c.f.t26, label), gap = 16, iw = 40;
+  const int x0 = (W - (tw + gap + iw)) / 2;
+  c.it.print(x0, cy, c.f.t26, c.paper, TextAlign::CENTER_LEFT, label);
+  c.it.print(x0 + tw + gap, cy + 1, c.f.i40, c.paper, TextAlign::CENTER_LEFT, icon);
+}
+
+inline std::string subtitle(const Model &m) {
+  char buf[48] = "";
+  std::string s;
+  if (!m.series.empty()) {
+    s = m.series;
+    if (!std::isnan(m.season) && !std::isnan(m.episode)) {
+      snprintf(buf, sizeof buf, " · S%d E%d", (int) m.season, (int) m.episode);
+      s += buf;
+    }
+  } else if (!m.artist.empty()) {
+    s = m.artist;
+  }
+  if (!m.app.empty()) s += s.empty() ? m.app : " · " + m.app;
+  return s;
+}
+
+inline void draw_playing(Ctx &c, const Model &m, esphome::runtime_image::RuntimeImage *poster,
+                         int64_t now_epoch) {
+  int ox = 0, oy = 0, dw = 0, dh = 0;
+  if (m.poster_loaded && poster != nullptr && poster->is_loaded()) draw_poster(c, poster, ox, oy, dw, dh);
+  if (dw > 0) {
+    c.it.rectangle(ox - 1, oy - 1, dw + 2, dh + 2, c.ink);
+  } else {
+    c.it.print(W / 2, POSTER_Y + POSTER_H / 2, c.f.i120, c.ink, TextAlign::CENTER, ICON_MOVIE);
+  }
+
+  print_fit(c, W / 2, TITLE_Y, c.f.t30, c.ink, TextAlign::TOP_CENTER,
+            m.title.empty() ? std::string("Playing") : m.title, W - 2 * M);
+  print_fit(c, W / 2, SUB_Y, c.f.t20, c.ink, TextAlign::TOP_CENTER, subtitle(m), W - 2 * M);
+
+  // Seek bar
+  const float pos = live_position(m, now_epoch);
+  const bool seekable = !std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0;
+  stroke_rrect(c, SEEK_X0, SEEK_Y, SEEK_X1 - SEEK_X0, SEEK_H, SEEK_H / 2, 2);
+  const int cy = SEEK_Y + SEEK_H / 2;
+  if (seekable) {
+    const int xf = SEEK_X0 + (int) ((SEEK_X1 - SEEK_X0) * std::min(1.0f, pos / m.duration));
+    if (xf - SEEK_X0 > SEEK_H) fill_rrect(c, SEEK_X0, SEEK_Y, xf - SEEK_X0, SEEK_H, SEEK_H / 2, c.ink);
+    c.it.filled_circle(xf, cy, 11, c.ink);
+    c.it.filled_circle(xf, cy, 7, c.paper);
+    char a[12], b[12], d[12];
+    fmt_hm(a, sizeof a, pos);
+    fmt_hm(b + 1, sizeof b - 1, m.duration - pos + 59.0f);  // remaining rounds up
+    b[0] = '-';
+    fmt_hm(d, sizeof d, m.duration);
+    c.it.print(SEEK_X0, TIME_Y + 12, c.f.t20, c.ink, TextAlign::CENTER_LEFT, a);
+    c.it.print(SEEK_X1, TIME_Y + 12, c.f.t20, c.ink, TextAlign::CENTER_RIGHT, b);
+    // Under the bar: whether playback is live, so a time that moves once a
+    // minute reads as "playing", not "stuck".
+    const bool playing = m.atv_state == "playing";
+    char mid[48];
+    snprintf(mid, sizeof mid, "%s · %s", playing ? "Playing" : "Paused", d);
+    const int icon_w = 24, gap = 4, tw = text_width(c, c.f.t18, mid);
+    const int x0 = W / 2 - (icon_w + gap + tw) / 2;
+    c.it.print(x0, TIME_Y + 13, c.f.i24, c.ink, TextAlign::CENTER_LEFT, playing ? ICON_PLAY : ICON_PAUSE);
+    c.it.print(x0 + icon_w + gap, TIME_Y + 12, c.f.t18, c.ink, TextAlign::CENTER_LEFT, mid);
+  }
+
+  // Transport
+  const int tcy = TRANSPORT_CY;
+  c.it.print(W / 2 - SKIP_DX, tcy, c.f.i64, c.ink, TextAlign::CENTER, ICON_REW);
+  c.it.print(W / 2 + SKIP_DX, tcy, c.f.i64, c.ink, TextAlign::CENTER, ICON_FF);
+  c.it.filled_circle(W / 2, tcy, PLAY_R, c.ink);
+  c.it.print(W / 2, tcy, c.f.i52, c.paper, TextAlign::CENTER,
+             m.atv_state == "playing" ? ICON_PAUSE : ICON_PLAY);
+}
+
+inline void draw_idle(Ctx &c, const Model &m, const char *infuse_label) {
+  const int cy = POSTER_Y + 110;
+  c.it.print(W / 2, cy, c.f.i120, c.ink, TextAlign::CENTER, ICON_MOVIE);
+  c.it.print(W / 2, cy + 100, c.f.t30, c.ink, TextAlign::CENTER, "Nothing playing");
+  const std::string where = m.app.empty() ? std::string("Apple TV · Home screen") : "Apple TV · " + m.app;
+  print_fit(c, W / 2, cy + 136, c.f.t20, c.ink, TextAlign::CENTER, where, W - 2 * M);
+  draw_big_button(c, infuse_label, nullptr);
+}
+
+inline void draw_off(Ctx &c) {
+  const int cy = TAB_Y + 160;
+  c.it.print(W / 2, cy, c.f.i120, c.ink, TextAlign::CENTER, ICON_TV_OFF);
+  c.it.print(W / 2, cy + 100, c.f.t30, c.ink, TextAlign::CENTER, "Apple TV is off");
+  draw_big_button(c, "Turn on", ICON_POWER);
+}
+
+// Outlined pill; the active half is filled inside the outline.
+inline void draw_tabs(Ctx &c, Page active) {
+  const int x0 = M, x1 = W - M, h = TAB_H, t = 3, mid = W / 2;
+  stroke_rrect(c, x0, TAB_Y, x1 - x0, h, h / 2, t);
+  // Same inner pill as stroke_rrect, so the ends line up pixel for pixel:
+  // fill it all, paint the inactive half back to paper (round outer end),
+  // then square off the active half at the middle.
+  const int ix0 = x0 + t, ix1 = x1 - t, ih = h - 2 * t, r = h / 2 - t, y0 = TAB_Y + t;
+  fill_rrect(c, ix0, y0, ix1 - ix0, ih, r, c.ink);
+  if (active == Page::NOW) {
+    fill_rrect(c, mid - r, y0, ix1 - (mid - r), ih, r, c.paper);
+    c.it.filled_rectangle(mid - r, y0, r, ih, c.ink);
+  } else {
+    fill_rrect(c, ix0, y0, mid + r - ix0, ih, r, c.paper);
+    c.it.filled_rectangle(mid, y0, r, ih, c.ink);
+  }
+  const int cy = TAB_Y + h / 2;
+  c.it.print((x0 + mid) / 2, cy, c.f.t20, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER,
+             "Now playing");
+  c.it.print((mid + x1) / 2, cy, c.f.t20, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER,
+             "Remote");
+}
+
+inline int key_x(int i) { return M + i * (KEY_W + KEY_GAP); }
+
+// One-line now-playing strip under the remote keys; tap it for the full view.
+inline void draw_mini(Ctx &c, const Model &m, int64_t now_epoch) {
+  const int y = MINI_Y;
+  if (m.mode() != Mode::PLAYING) {
+    c.it.print(W / 2, y + 22, c.f.t20, c.ink, TextAlign::CENTER, "Nothing playing");
+    return;
+  }
+  c.it.print(M + 2, y + 20, c.f.i24, c.ink, TextAlign::CENTER_LEFT,
+             m.atv_state == "playing" ? ICON_PAUSE : ICON_PLAY);
+  const float pos = live_position(m, now_epoch);
+  char tbuf[24] = "";
+  if (!std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0) {
+    char a[12], b[12];
+    fmt_hm(a, sizeof a, pos);
+    fmt_hm(b, sizeof b, m.duration);
+    snprintf(tbuf, sizeof tbuf, "%s / %s", a, b);
+    c.it.print(W - M, y + 20, c.f.t18, c.ink, TextAlign::CENTER_RIGHT, tbuf);
+    c.it.filled_rectangle(M, y + 38, W - 2 * M, 3, c.ink);
+    const int xf = M + (int) ((W - 2 * M) * std::min(1.0f, pos / m.duration));
+    c.it.filled_rectangle(M, y + 36, xf - M + 1, 7, c.ink);
+  }
+  const int tw = tbuf[0] ? text_width(c, c.f.t18, tbuf) + 16 : 0;
+  print_fit(c, M + 34, y + 20, c.f.t20, c.ink, TextAlign::CENTER_LEFT,
+            m.title.empty() ? std::string("Playing") : m.title, W - 2 * M - 34 - tw);
+}
+
+// One quarter of the pad ring filled with ink: the pressed arrow. Wedges keep
+// a small gap along the diagonals so the four directions read as separate.
+inline void fill_wedge(Ctx &c, Press dir) {
+  const int cx = PAD_CX, cy = PAD_CY, r_out = PAD_R - 2, r_in = PAD_R_IN + 8, gap = 5;
+  for (int dy = -r_out; dy <= r_out; dy++) {
+    for (int dx = -r_out; dx <= r_out; dx++) {
+      const int d2 = dx * dx + dy * dy;
+      if (d2 > r_out * r_out || d2 < r_in * r_in) continue;
+      const int ax = std::abs(dx), ay = std::abs(dy);
+      bool on = false;
+      switch (dir) {
+        case Press::UP: on = dy < 0 && ax <= ay - gap; break;
+        case Press::DOWN: on = dy > 0 && ax <= ay - gap; break;
+        case Press::LEFT: on = dx < 0 && ay <= ax - gap; break;
+        case Press::RIGHT: on = dx > 0 && ay <= ax - gap; break;
+        default: break;
+      }
+      if (on) c.it.draw_pixel_at(cx + dx, cy + dy, c.ink);
+    }
+  }
+}
+
+inline void draw_remote(Ctx &c, const Model &m, int64_t now_epoch) {
+  const int cx = PAD_CX, cy = PAD_CY;
+  const Press p = m.pressed;
+  c.it.filled_circle(cx, cy, PAD_R, c.ink);
+  c.it.filled_circle(cx, cy, PAD_R - 3, c.paper);
+  const bool arrow = p == Press::UP || p == Press::DOWN || p == Press::LEFT || p == Press::RIGHT;
+  if (arrow) fill_wedge(c, p);
+  c.it.filled_circle(cx, cy, PAD_R_IN, c.ink);
+  if (p == Press::OK) c.it.filled_circle(cx, cy, PAD_R_IN - 5, c.paper);  // pressed: ring
+  c.it.print(cx, cy, c.f.t30, p == Press::OK ? c.ink : c.paper, TextAlign::CENTER, "OK");
+  const int k = (PAD_R + PAD_R_IN) / 2 + 4;
+  c.it.print(cx, cy - k, c.f.i64, p == Press::UP ? c.paper : c.ink, TextAlign::CENTER, ICON_UP);
+  c.it.print(cx, cy + k, c.f.i64, p == Press::DOWN ? c.paper : c.ink, TextAlign::CENTER, ICON_DOWN);
+  c.it.print(cx - k, cy, c.f.i64, p == Press::LEFT ? c.paper : c.ink, TextAlign::CENTER, ICON_LEFT);
+  c.it.print(cx + k, cy, c.f.i64, p == Press::RIGHT ? c.paper : c.ink, TextAlign::CENTER, ICON_RIGHT);
+
+  const char *const labels[4] = {"Back", "Home", m.app_button.empty() ? "App" : m.app_button.c_str(), "Play"};
+  static const char *const icons[4] = {ICON_BACK, ICON_TV, ICON_MOVIE, ICON_PLAY_PAUSE};
+  static const Press keys[4] = {Press::KEY_BACK, Press::KEY_HOME, Press::KEY_INFUSE, Press::KEY_PLAY};
+  for (int i = 0; i < 4; i++) {
+    const int x = key_x(i);
+    const bool down = p == keys[i];
+    if (down) fill_rrect(c, x, KEY_Y, KEY_W, KEY_H, 16, c.ink);
+    else stroke_rrect(c, x, KEY_Y, KEY_W, KEY_H, 16, 3);
+    const Color fg = down ? c.paper : c.ink;
+    c.it.print(x + KEY_W / 2, KEY_Y + 24, c.f.i40, fg, TextAlign::CENTER, icons[i]);
+    print_fit(c, x + KEY_W / 2, KEY_Y + 54, c.f.t18, fg, TextAlign::CENTER, labels[i], KEY_W - 8);
+  }
+  draw_mini(c, m, now_epoch);
+}
+
+// Draws `text` word-wrapped from (x, y) within max_w; returns the y after it.
+inline int print_wrapped(Ctx &c, int x, int y, BaseFont *f, Color col, const std::string &text, int max_w,
+                         int line_h) {
+  std::string line, word;
+  auto flush = [&]() {
+    if (line.empty()) return;
+    c.it.print(x, y, f, col, TextAlign::TOP_LEFT, line.c_str());
+    y += line_h;
+    line.clear();
+  };
+  for (size_t i = 0; i <= text.size(); i++) {
+    const char ch = i < text.size() ? text[i] : ' ';
+    if (ch != ' ') {
+      word += ch;
+      continue;
+    }
+    if (word.empty()) continue;
+    const std::string trial = line.empty() ? word : line + " " + word;
+    if (text_width(c, f, trial.c_str()) > max_w && !line.empty()) {
+      flush();
+      line = word;
+    } else {
+      line = trial;
+    }
+    word.clear();
+  }
+  flush();
+  return y;
+}
+
+// A numbered step: a filled circle with the number, then wrapped text.
+inline int draw_step(Ctx &c, int y, int n, const std::string &text) {
+  const int r = 15, cx = M + r + 2;
+  c.it.filled_circle(cx, y + 12, r, c.ink);
+  char num[4];
+  snprintf(num, sizeof num, "%d", n);
+  c.it.print(cx, y + 12, c.f.t20, c.paper, TextAlign::CENTER, num);
+  return print_wrapped(c, M + 2 * r + 16, y, c.f.t20, c.ink, text, W - 2 * M - 2 * r - 16, 27) + 14;
+}
+
+inline void draw_setup_wifi(Ctx &c, const Model &m) {
+  c.it.print(W / 2, 30, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Set up Wi-Fi");
+  print_wrapped(c, M + 6, 76, c.f.t20, c.ink, "The Sticky can't reach a Wi-Fi network. Connect it in a minute:", W - 2 * M - 12, 27);
+
+  // QR code that joins the hotspot, in a quiet zone.
+  int y = 150;
+  auto *qr = wifi_qr();
+  if (qr != nullptr) {
+    const int modules = qr->get_size();
+    const int scale = modules > 0 ? std::max(3, std::min(7, 196 / modules)) : 6;
+    const int side = modules * scale, x = (W - side) / 2;
+    c.it.filled_rectangle(x - 12, y - 12, side + 24, side + 24, c.paper);
+    c.it.qr_code(x, y, qr, c.ink, scale);
+    y += side + 22;
+  }
+  c.it.print(W / 2, y, c.f.t20, c.ink, TextAlign::TOP_CENTER, "Scan with your phone's camera, or join:");
+  y += 34;
+  stroke_rrect(c, M + 30, y, W - 2 * M - 60, 76, 14, 3);
+  c.it.print(W / 2, y + 10, c.f.t26, c.ink, TextAlign::TOP_CENTER, m.ap_ssid.c_str());
+  std::string pw = m.ap_password.empty() ? "Open network, no password" : "password  " + m.ap_password;
+  c.it.print(W / 2, y + 46, c.f.t20, c.ink, TextAlign::TOP_CENTER, pw.c_str());
+  y += 100;
+  y = draw_step(c, y, 1, "Join the network above.");
+  y = draw_step(c, y, 2, "A page opens. If it doesn't, browse to 192.168.4.1.");
+  draw_step(c, y, 3, "Choose your home Wi-Fi and enter its password.");
+}
+
+inline void draw_setup_ha(Ctx &c, const Model &m) {
+  c.it.print(W / 2, 30, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Add to Home Assistant");
+  c.it.print(W / 2, 150, c.f.i120, c.ink, TextAlign::CENTER, ICON_HOME_ASSISTANT);
+  std::string where = "Connected to Wi-Fi";
+  if (!m.ip.empty()) where += " · " + m.ip;
+  c.it.print(W / 2, 232, c.f.t20, c.ink, TextAlign::TOP_CENTER, where.c_str());
+  int y = 290;
+  y = draw_step(c, y, 1, "In Home Assistant, open Settings, then Devices & services.");
+  y = draw_step(c, y, 2, "Under Discovered, configure “" + m.device_name + "” (ESPHome).");
+  y = draw_step(c, y, 3, "Enter its encryption key. Sticky Simulator shows it after flashing.");
+  y = draw_step(c, y, 4, "In the device's options, allow it to perform Home Assistant actions.");
+  print_wrapped(c, M + 6, std::max(y + 10, 690), c.f.t18, c.ink, "This screen goes away once Home Assistant connects.", W - 2 * M - 12, 24);
+}
+
+// On Wi-Fi but nothing chosen yet (a fresh, generic firmware): say where to
+// pick the player and lights.
+inline void draw_setup_configure(Ctx &c, const Model &m) {
+  c.it.print(W / 2, 30, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Finish setup");
+  c.it.print(W / 2, 150, c.f.i120, c.ink, TextAlign::CENTER, ICON_HOME_ASSISTANT);
+  std::string where = m.net == Net::CONNECTED ? "Connected to Wi-Fi" : "Not on Wi-Fi yet";
+  if (!m.ip.empty()) where += " · " + m.ip;
+  c.it.print(W / 2, 232, c.f.t20, c.ink, TextAlign::TOP_CENTER, where.c_str());
+  print_wrapped(c, M + 6, 278, c.f.t20, c.ink, "Choose what this Sticky controls: your player, the app to open and one or two lights.", W - 2 * M - 12, 27);
+  int y = 370;
+  y = draw_step(c, y, 1, "Connect the Sticky to a computer with its USB-C cable.");
+  y = draw_step(c, y, 2, "In Chrome or Edge, open " + m.setup_url + ".");
+  y = draw_step(c, y, 3, "Follow the steps: it sends your choices over the cable.");
+  print_wrapped(c, M + 6, std::max(y + 10, 700), c.f.t18, c.ink, m.device_name, W - 2 * M - 12, 24);
+}
+
+// Asleep before setup finished (10 min on battery): the hotspot is off while it
+// sleeps, so say how to bring it back instead of leaving a QR code up.
+inline void draw_setup_sleep(Ctx &c, const Model &m) {
+  const bool wifi = m.setup() == Setup::WIFI;
+  const bool configure = m.setup() == Setup::CONFIGURE;
+  c.it.print(W / 2, 200, c.f.i120, c.ink, TextAlign::CENTER, ICON_SLEEP);
+  c.it.print(W / 2, 300, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Asleep");
+  print_wrapped(c, M + 30, 360, c.f.t22, c.ink,
+                wifi ? "Wi-Fi isn't set up yet." : configure ? "Setup isn't finished yet." : "Not added to Home Assistant yet.",
+                W - 2 * M - 60, 30);
+  print_wrapped(c, M + 30, 420, c.f.t20, c.ink,
+                wifi        ? "Press any button: the Sticky wakes up and opens its setup hotspot again."
+                : configure ? "Press any button: the Sticky wakes up and shows how to finish setup."
+                            : "Press any button: the Sticky wakes up and shows how to add it again.",
+                W - 2 * M - 60, 28);
+  print_wrapped(c, M + 30, 560, c.f.t18, c.ink, "Plugged into USB, it stays awake during setup.", W - 2 * M - 60, 24);
+}
+
+// The face left on the panel during deep sleep: drawn instead of the bottom
+// controls, which do nothing until a button wakes the device.
+inline void draw_sleep_banner(Ctx &c) {
+  const int y = VOL_Y - 10;
+  c.it.filled_rectangle(0, y - 4, W, H - y + 4, c.paper);
+  fill_rrect(c, M, y, W - 2 * M, VOL_H + 10, 18, c.ink);
+  const int cy = y + (VOL_H + 10) / 2;
+  c.it.print(M + 40, cy, c.f.i40, c.paper, TextAlign::CENTER, ICON_SLEEP);
+  c.it.print(M + 76, cy, c.f.t22, c.paper, TextAlign::CENTER_LEFT, "Asleep · press a button");
+}
+
+inline void draw_screen(Ctx &c, const Model &m, esphome::runtime_image::RuntimeImage *poster,
+                        int64_t now_epoch, bool time_valid, int hour, int minute, const char *room,
+                        const char *name1, const char *name2, const char *infuse_label,
+                        const char *player = "Apple TV") {
+  c.it.fill(c.paper);
+  if (m.sleeping && m.in_setup()) return draw_setup_sleep(c, m);
+  switch (m.setup()) {
+    case Setup::WIFI: return draw_setup_wifi(c, m);
+    case Setup::CONFIGURE: return draw_setup_configure(c, m);
+    case Setup::HOME_ASSISTANT: return draw_setup_ha(c, m);
+    case Setup::NONE: break;
+  }
+  draw_status(c, m, room, time_valid, hour, minute);
+  draw_tiles(c, m, name1, name2, player);
+  const Mode mode = m.mode();
+  if (mode == Mode::OFF) {
+    draw_off(c);
+  } else {
+    draw_tabs(c, m.page);
+    if (m.page == Page::REMOTE) draw_remote(c, m, now_epoch);
+    else if (mode == Mode::PLAYING) draw_playing(c, m, poster, now_epoch);
+    else draw_idle(c, m, infuse_label);
+    draw_volume(c, m);
+  }
+  if (m.sleeping) draw_sleep_banner(c);
+}
+
+struct Labels {
+  const char *room, *light_1, *light_2, *infuse;
+  const char *player = "Apple TV";   // the power tile's label
+};
+
+// The display lambda: draws the screen and records what it showed, so the
+// minute tick knows when the clock or seek bar needs a redraw.
+inline void render(Ctx &c, esphome::runtime_image::RuntimeImage *poster, int64_t now_epoch, bool time_valid,
+                   int hour, int minute, const Labels &l) {
+  const auto &m = model();
+  draw_screen(c, m, poster, now_epoch, time_valid, hour, minute, l.room, l.light_1, l.light_2, l.infuse,
+              l.player);
+  auto &r = redraw();
+  r.drawn_clock = time_valid ? hour * 60 + minute : -2;
+  r.drawn_minute = m.mode() == Mode::PLAYING ? shown_minute(m, now_epoch) : -1;
+}
+
+// Every few seconds: redraw only when the clock or seek-bar minute changed.
+inline void minute_tick(bool time_valid, int hour, int minute, int64_t now_epoch) {
+  if (!time_valid) return;
+  const auto &m = model();
+  const auto &r = redraw();
+  const int clock = hour * 60 + minute;
+  const int shown = m.mode() == Mode::PLAYING ? shown_minute(m, now_epoch) : -1;
+  if (clock != r.drawn_clock || shown != r.drawn_minute) request();
+}
+
+// --- Hit testing ----------------------------------------------------------------
+enum Action {
+  NONE = 0,
+  LIGHT_1,
+  LIGHT_2,
+  ATV_POWER,
+  PLAY_PAUSE,
+  SKIP_BACK,
+  SKIP_FWD,
+  SEEK,        // seek_to holds the target in seconds
+  VOL_DOWN,
+  VOL_UP,
+  OPEN_INFUSE,
+  TURN_ON,
+  TAB_NOW,
+  TAB_REMOTE,
+  NAV_UP,
+  NAV_DOWN,
+  NAV_LEFT,
+  NAV_RIGHT,
+  NAV_SELECT,
+  NAV_BACK,
+  NAV_HOME,
+};
+
+// remote.send_command name for each pad action (Apple TV integration).
+inline const char *nav_command(Action a) {
+  switch (a) {
+    case NAV_UP: return "up";
+    case NAV_DOWN: return "down";
+    case NAV_LEFT: return "left";
+    case NAV_RIGHT: return "right";
+    case NAV_SELECT: return "select";
+    case NAV_BACK: return "menu";
+    case NAV_HOME: return "home";
+    default: return nullptr;
+  }
+}
+
+inline bool in(int x, int y, int x0, int y0, int w, int h) {
+  return x >= x0 && x < x0 + w && y >= y0 && y < y0 + h;
+}
+
+inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_to) {
+  if (m.in_setup()) return NONE;
+  const int n = tile_count(m.light_count);
+  for (int i = 0; i < n; i++)
+    if (in(x, y, tile_x(i, n) - TILE_GAP / 2, TILE_Y - 6, tile_w(n) + TILE_GAP, TILE_H + 12))
+      return i == n - 1 ? ATV_POWER : (Action) (LIGHT_1 + i);
+
+  const Mode mode = m.mode();
+  if (mode != Mode::OFF && in(x, y, 0, VOL_Y - 8, W, VOL_H + 16)) {
+    if (x < M + VOL_BTN_W + 20) return VOL_DOWN;
+    if (x > W - M - VOL_BTN_W - 20) return VOL_UP;
+    return NONE;
+  }
+  if (mode != Mode::OFF && in(x, y, 0, TAB_Y - 6, W, TAB_H + 12))
+    return x < W / 2 ? TAB_NOW : TAB_REMOTE;
+
+  if (mode != Mode::OFF && m.page == Page::REMOTE) {
+    // Pad: the centre is OK, the ring splits into four 90-degree wedges.
+    const int dx = x - PAD_CX, dy = y - PAD_CY;
+    const int d2 = dx * dx + dy * dy;
+    if (d2 <= PAD_R_IN * PAD_R_IN) return NAV_SELECT;
+    if (d2 <= (PAD_R + 24) * (PAD_R + 24)) {
+      if (std::abs(dx) > std::abs(dy)) return dx < 0 ? NAV_LEFT : NAV_RIGHT;
+      return dy < 0 ? NAV_UP : NAV_DOWN;
+    }
+    if (in(x, y, 0, KEY_Y - 8, W, KEY_H + 12)) {
+      const int i = std::max(0, std::min(3, (x - M + KEY_GAP / 2) / (KEY_W + KEY_GAP)));
+      static const Action keys[4] = {NAV_BACK, NAV_HOME, OPEN_INFUSE, PLAY_PAUSE};
+      return keys[i];
+    }
+    if (in(x, y, 0, MINI_Y - 4, W, MINI_H + 8)) return mode == Mode::PLAYING ? TAB_NOW : NONE;
+    return NONE;
+  }
+
+  if (mode == Mode::IDLE && in(x, y, (W - BIG_BTN_W) / 2 - 20, BIG_BTN_Y - 20, BIG_BTN_W + 40, BIG_BTN_H + 40))
+    return OPEN_INFUSE;
+  if (mode == Mode::OFF && y > TILE_Y + TILE_H + 12) return TURN_ON;  // the whole lower half
+  if (mode != Mode::PLAYING) return NONE;
+
+  // Seek bar: generous band around the thin bar (the times row included).
+  if (in(x, y, 0, SEEK_Y - 22, W, TIME_Y + 26 - (SEEK_Y - 22))) {
+    if (std::isnan(m.duration) || m.duration <= 0) return NONE;
+    float f = (float) (x - SEEK_X0) / (float) (SEEK_X1 - SEEK_X0);
+    f = std::max(0.0f, std::min(1.0f, f));
+    seek_to = f * m.duration;
+    return SEEK;
+  }
+  if (in(x, y, 0, TRANSPORT_CY - 48, W, 96)) {
+    if (x < W / 2 - PLAY_R - 20) return SKIP_BACK;
+    if (x > W / 2 + PLAY_R + 20) return SKIP_FWD;
+    return PLAY_PAUSE;
+  }
+  // Tapping the poster/title also toggles play/pause: the largest target.
+  if (in(x, y, 0, POSTER_Y, W, SUB_Y + 30 - POSTER_Y)) return PLAY_PAUSE;
+  return NONE;
+}
+
+// New Apple TV state from HA. Playback starting shows Now playing; going
+// back to the menus shows the Remote pad (the first state after boot picks
+// the page the same way).
+inline void set_atv_state(const std::string &state) {
+  auto &m = model();
+  const Mode before = m.mode();
+  m.atv_state = state;
+  const Mode after = m.mode();
+  if (!m.state_seen || before != after) {
+    if (after == Mode::PLAYING) m.page = Page::NOW;
+    else if (after == Mode::IDLE) m.page = Page::REMOTE;
+  }
+  m.state_seen = true;
+  request();
+}
+
+inline void show_page(Page p) {
+  auto &m = model();
+  if (m.page == p) return;
+  m.page = p;
+  request(true);
+}
+
+// --- Optimistic updates ----------------------------------------------------------
+// E-paper is slow, so show the expected result at once; HA's state update
+// confirms (or corrects) it a moment later.
+inline void optimistic_toggle_light(int i) {
+  auto &l = model().lights[i];
+  if (!l.known()) return;
+  l.state = l.on() ? "off" : "on";
+  request();
+}
+
+inline void optimistic_play_pause(int64_t now_epoch) {
+  auto &m = model();
+  const float p = live_position(m, now_epoch);
+  if (!std::isnan(p)) {
+    m.position = p;
+    m.position_at = now_epoch;
+  }
+  if (m.atv_state == "playing") m.atv_state = "paused";
+  else if (m.atv_state == "paused") m.atv_state = "playing";
+  request();
+}
+
+inline void optimistic_seek(float to, int64_t now_epoch) {
+  auto &m = model();
+  m.position = to;
+  m.position_at = now_epoch;
+  request();
+}
+
+// --- Values from Home Assistant and the device's settings -----------------------
+inline float to_float(const std::string &v) {
+  if (v.empty() || v == "None" || v == "unknown" || v == "unavailable" || v == "nan") return NAN;
+  char *end = nullptr;
+  const float f = strtof(v.c_str(), &end);
+  return end == v.c_str() ? NAN : f;
+}
+
+/// One value, by key: what the firmware's HA subscriptions and settings feed in,
+/// and what the simulator's sc_set passes on. Keys: atv_state title series artist
+/// app season episode position duration volume position_at (ISO 8601) picture
+/// light0_state light1_state light0_brightness light1_brightness online usb
+/// battery sleeping net ip ha_paired ap_ssid ap_password device_name setup_url
+/// light_count light_icon0 light_icon1 configured app_button.
+inline void apply(const std::string &key, const std::string &v) {
+  auto &m = model();
+  if (key == "atv_state") return set_atv_state(v);
+  if (key == "title") m.title = clean(v);
+  else if (key == "series") m.series = clean(v);
+  else if (key == "artist") m.artist = clean(v);
+  else if (key == "app") m.app = clean(v);
+  else if (key == "season") m.season = to_float(v);
+  else if (key == "episode") m.episode = to_float(v);
+  else if (key == "position") m.position = to_float(v);
+  else if (key == "duration") m.duration = to_float(v);
+  else if (key == "volume") m.volume = to_float(v);
+  else if (key == "position_at") m.position_at = parse_iso8601(v);
+  else if (key == "light0_state") m.lights[0].state = v;
+  else if (key == "light1_state") m.lights[1].state = v;
+  else if (key == "light0_brightness") m.lights[0].brightness = to_float(v);
+  else if (key == "light1_brightness") m.lights[1].brightness = to_float(v);
+  else if (key == "online") m.online = v == "1";
+  else if (key == "usb") m.usb = v == "1";
+  else if (key == "sleeping") {
+    m.sleeping = v == "1";
+    return request(true);
+  } else if (key == "battery") {
+    const float x = to_float(v);
+    if (std::isnan(m.battery) || (int) m.battery != (int) x) request();
+    m.battery = x;
+    return;
+  } else if (key == "net") {
+    return set_network(v == "connected", v == "hotspot", m.ip);
+  } else if (key == "ip") {
+    return set_network(m.net == Net::CONNECTED, m.net == Net::HOTSPOT, v);
+  } else if (key == "ha_paired") {
+    return set_ha_paired(v == "1");
+  } else if (key == "ap_ssid") m.ap_ssid = v;
+  else if (key == "ap_password") m.ap_password = v;
+  else if (key == "device_name") m.device_name = v;
+  else if (key == "setup_url") m.setup_url = v;
+  else if (key == "light_count") {
+    m.light_count = v == "1" ? 1 : 2;
+    return request(true);
+  } else if (key == "light_icon0" || key == "light_icon1") {
+    m.light_icon[key.back() - '0'] = light_icon_index(v);
+  } else if (key == "app_button") {
+    m.app_button = v;
+  } else if (key == "configured") {
+    m.configured = v == "1";
+    return request(true);
+  } else if (key == "picture") {
+    // New artwork: no poster until its download lands.
+    const std::string pic = clean(v);
+    if (pic == m.picture) return;
+    m.picture = pic;
+    m.poster_loaded = false;
+    return request(true);
+  } else {
+    return;
+  }
+  request();
+}
+
+// --- Input handling ----------------------------------------------------------------
+// What a tap or button press asks Home Assistant to do. The firmware sends
+// these as homeassistant.action calls; the simulator fakes HA with them.
+struct Actions {
+  virtual ~Actions() = default;
+  virtual void click() = 0;                       // audible tick
+  virtual void toggle_light(int i) = 0;
+  virtual void atv_power(bool on) = 0;
+  virtual void play_pause() = 0;
+  virtual void seek(float seconds) = 0;
+  virtual void remote_command(const char *command) = 0;
+  virtual void volume(bool up) = 0;
+  virtual void open_infuse() = 0;
+};
+
+inline Actions *&actions() {
+  static Actions *a = nullptr;
+  return a;
+}
+
+inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
+  auto &m = model();
+  if (m.sleeping) return NONE;
+  float seek_to = 0;
+  const Action a = hit(m, x, y, now_epoch, seek_to);
+  if (a == NONE) return a;
+  act.click();
+  if (m.page == Page::REMOTE && m.mode() != Mode::OFF) {
+    switch (a) {
+      case NAV_UP: press_feedback(Press::UP); break;
+      case NAV_DOWN: press_feedback(Press::DOWN); break;
+      case NAV_LEFT: press_feedback(Press::LEFT); break;
+      case NAV_RIGHT: press_feedback(Press::RIGHT); break;
+      case NAV_SELECT: press_feedback(Press::OK); break;
+      case NAV_BACK: press_feedback(Press::KEY_BACK); break;
+      case NAV_HOME: press_feedback(Press::KEY_HOME); break;
+      case OPEN_INFUSE: press_feedback(Press::KEY_INFUSE); break;
+      case PLAY_PAUSE: press_feedback(Press::KEY_PLAY); break;
+      default: break;
+    }
+  }
+  const float pos = live_position(m, now_epoch);
+  switch (a) {
+    case LIGHT_1:
+    case LIGHT_2: {
+      const int i = a == LIGHT_1 ? 0 : 1;
+      optimistic_toggle_light(i);
+      act.toggle_light(i);
+      break;
+    }
+    case ATV_POWER: act.atv_power(!m.atv_on()); break;
+    case TURN_ON: act.atv_power(true); break;
+    case OPEN_INFUSE: act.open_infuse(); break;
+    case PLAY_PAUSE:
+      optimistic_play_pause(now_epoch);
+      act.play_pause();
+      break;
+    case SEEK:
+      optimistic_seek(seek_to, now_epoch);
+      act.seek(seek_to);
+      break;
+    case SKIP_BACK:
+    case SKIP_FWD:
+      if (std::isnan(pos)) {
+        act.remote_command(a == SKIP_BACK ? "skip_backward" : "skip_forward");
+      } else {
+        const float to = a == SKIP_BACK ? std::max(0.0f, pos - SKIP_SECONDS) : pos + SKIP_SECONDS;
+        optimistic_seek(to, now_epoch);
+        act.seek(to);
+      }
+      break;
+    case VOL_DOWN: act.volume(false); break;
+    case VOL_UP: act.volume(true); break;
+    case TAB_NOW: show_page(Page::NOW); break;
+    case TAB_REMOTE: show_page(Page::REMOTE); break;
+    default:
+      if (const char *cmd = nav_command(a)) act.remote_command(cmd);
+      break;
+  }
+  return a;
+}
+
+// Physical buttons: AI = play/pause (or turn on when off), Up/Down = volume.
+enum Button { BTN_AI, BTN_UP, BTN_DOWN };
+
+inline void handle_button(Button b, int64_t now_epoch, Actions &act) {
+  auto &m = model();
+  if (m.sleeping || m.in_setup()) return;
+  switch (b) {
+    case BTN_AI:
+      if (m.mode() == Mode::OFF) {
+        act.atv_power(true);
+      } else {
+        optimistic_play_pause(now_epoch);
+        act.play_pause();
+      }
+      break;
+    case BTN_UP: act.volume(true); break;
+    case BTN_DOWN: act.volume(false); break;
+  }
+}
+
+// --- Power latch and deep sleep -------------------------------------------------
+// GPIO45 (PWR_HOLD) and GPIO46 (PWR_LOCK) keep the battery rail latched and
+// GPIO39 (charger enable, active low) must stay low so USB can charge during
+// sleep. Their levels are frozen across deep sleep and released on boot, after
+// the YAML has re-driven the same levels.
+inline void hold_pins_for_sleep() {
+  gpio_hold_en(GPIO_NUM_45);
+  gpio_hold_en(GPIO_NUM_46);
+  gpio_hold_en(GPIO_NUM_39);
+  gpio_deep_sleep_hold_en();
+  // Keep pull-ups on the three active-low buttons so the ext1 ANY_LOW mask
+  // never watches a floating line (needs the RTC peripheral domain on).
+  for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6}) {
+    rtc_gpio_pullup_en(pin);
+    rtc_gpio_pulldown_dis(pin);
+  }
+  esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+}
+
+inline void release_sleep_holds() {
+  gpio_deep_sleep_hold_dis();
+  gpio_hold_dis(GPIO_NUM_45);
+  gpio_hold_dis(GPIO_NUM_46);
+  gpio_hold_dis(GPIO_NUM_39);
+}
+
+}  // namespace remote_ui
