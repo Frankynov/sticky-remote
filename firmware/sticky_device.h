@@ -16,6 +16,8 @@
 //   {"sticky":"setup","cmd":"set","settings":{...},"wifi":{"ssid":"…","pass":"…"}}
 //                                                      -> {"ok":true,"saved":true,"restarting":true}
 //   {"sticky":"setup","cmd":"reset"}                   -> clears the settings, restarts
+//   {"sticky":"setup","cmd":"calibrate"}               -> shows the touch calibration screen
+//   {"sticky":"setup","cmd":"touch_reset"}             -> forgets the touch calibration
 // The board also sends the info line ("event":"hello") once at boot. Send at
 // most 64 bytes every ~10 ms: the receive buffer is small.
 
@@ -109,6 +111,42 @@ inline bool save(const Settings &s) {
   const bool ok = pref().save(&st) && esphome::global_preferences->sync();
   if (ok) stored_present() = true;
   return ok;
+}
+
+// --- Touch calibration (its own preference, so settings resets keep it) -------
+struct StoredCal {
+  uint32_t magic;
+  float v[6];   // ax bx cx ay by cy, see remote_ui::TouchCal
+};
+constexpr uint32_t CAL_MAGIC = 0x54434131;  // "TCA1"
+
+inline esphome::ESPPreferenceObject &cal_pref() {
+  static esphome::ESPPreferenceObject p = esphome::global_preferences->make_preference<StoredCal>(0x53544341, true);
+  return p;
+}
+
+inline void load_touch_cal() {
+  StoredCal st{};
+  auto &c = remote_ui::touch_cal();
+  c = remote_ui::TouchCal{};
+  if (cal_pref().load(&st) && st.magic == CAL_MAGIC) {
+    c.valid = true;
+    c.ax = st.v[0]; c.bx = st.v[1]; c.cx = st.v[2];
+    c.ay = st.v[3]; c.by = st.v[4]; c.cy = st.v[5];
+  }
+  ESP_LOGI(TAG, "touch calibration: %s", c.valid ? "stored" : "none (YAML transform)");
+}
+
+/// Saves a calibration; an invalid one clears it (back to the YAML transform).
+inline bool save_touch_cal(const remote_ui::TouchCal &c) {
+  StoredCal st{};
+  if (c.valid) {
+    st.magic = CAL_MAGIC;
+    const float v[6] = {c.ax, c.bx, c.cx, c.ay, c.by, c.cy};
+    memcpy(st.v, v, sizeof v);
+  }
+  remote_ui::touch_cal() = c;
+  return cal_pref().save(&st) && esphome::global_preferences->sync();
 }
 
 inline void forget() {
@@ -235,6 +273,21 @@ inline std::string info(const char *event) {
     ha["connected"] = m.online;
     ha["paired"] = m.ha_paired;
     root["configured"] = settings().configured();
+    {
+      const auto &tc = remote_ui::touch_cal();
+      JsonObject touch = root["touch"].to<JsonObject>();
+      touch["calibrated"] = tc.valid;
+      touch["calibrating"] = m.calibrating;
+      if (tc.valid) {
+        bool swap, mx, my;
+        remote_ui::describe_cal(tc, swap, mx, my);
+        touch["swap_xy"] = swap;
+        touch["mirror_x"] = mx;
+        touch["mirror_y"] = my;
+        JsonArray map = touch["map"].to<JsonArray>();
+        for (float v : {tc.ax, tc.bx, tc.cx, tc.ay, tc.by, tc.cy}) map.add(v);
+      }
+    }
     root["stored"] = stored_present();
     JsonObject st = root["settings"].to<JsonObject>();
 #define X(f) st[#f] = settings().f;
@@ -296,6 +349,12 @@ inline void handle(const std::string &line) {
       root["restarting"] = true;
     }));
     restart_at() = esphome::millis() + 800;
+  } else if (cmd == "calibrate") {        // shows the touch calibration screen
+    remote_ui::calib_start();
+    send_line(info("info"));
+  } else if (cmd == "touch_reset") {      // forgets the calibration
+    save_touch_cal(remote_ui::TouchCal{});
+    send_line(info("info"));
   } else if (cmd == "reset") {
     forget();
     send_line(esphome::json::build_json([](JsonObject root) {

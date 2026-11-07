@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.2.2"
+  firmware_version: "0.2.3"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -45,9 +45,9 @@ substitutions:
 
   # Portrait. If the picture is upside down on the device, use 270 instead.
   rotation: "90"
-  # Touch axes for portrait. The GT911 reports x and y swapped relative to the
-  # panel (Seeed sets swap_xy too); flip the mirrors if taps still land mirrored.
-  touch_swap_xy: "true"
+  # Touch axes for portrait, used until a touch calibration is saved on the
+  # device (hold Down for 3 s on the device, or the USB "calibrate" command).
+  touch_swap_xy: "false"
   touch_mirror_x: "false"
   touch_mirror_y: "false"
 
@@ -107,6 +107,7 @@ esphome:
             d.ha_url = "${ha_base_url}";
             d.font_set = "${font_set}";
             sticky::load();
+            sticky::load_touch_cal();
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
             // Subscribe to the chosen entities before the API connects.
@@ -127,6 +128,7 @@ esphome:
                 if (up) id(atv_volume_up).execute(); else id(atv_volume_down).execute();
               }
               void open_infuse() override { id(atv_open_infuse).execute(); }
+              void save_touch_cal(const remote_ui::TouchCal &c) override { sticky::save_touch_cal(c); }
             };
             static EspActions esp_actions;
             remote_ui::actions() = &esp_actions;
@@ -367,6 +369,14 @@ binary_sensor:
       - lambda: |-
           id(last_activity) = millis();
           if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
+    # Hold 3 s: touch calibration (from any screen, setup screens included).
+    on_multi_click:
+      - timing:
+          - ON for at least 3s
+        then:
+          - lambda: |-
+              id(last_activity) = millis();
+              remote_ui::calib_start();
 
 # --- Actions sent to Home Assistant -------------------------------------------------------
 script:
@@ -563,11 +573,12 @@ touchscreen:
       - lambda: |-
           const uint32_t now_ms = millis();
           id(last_activity) = now_ms;
-          ESP_LOGD("touch", "x=%d y=%d", touch.x, touch.y);
+          ESP_LOGD("touch", "x=%d y=%d raw x=%d y=%d", touch.x, touch.y, touch.x_raw, touch.y_raw);
           if (now_ms - id(last_tap) < 350) return;   // debounce
           id(last_tap) = now_ms;
           auto t = id(ha_time).now();
-          remote_ui::handle_tap(touch.x, touch.y, t.is_valid() ? t.timestamp : 0, *remote_ui::actions());
+          remote_ui::handle_touch(touch.x_raw, touch.y_raw, touch.x, touch.y, t.is_valid() ? t.timestamp : 0,
+                                  *remote_ui::actions());
 
 # --- Display --------------------------------------------------------------------------------
 font:

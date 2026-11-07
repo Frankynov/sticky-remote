@@ -87,6 +87,21 @@ int main(int argc, char **argv) {
       std::vector<std::string> calls;
       const int a = sc_tap(x, y, now, collect, &calls);
       reply = std::string("{\"action\":\"") + sc_action_name(a) + "\",\"calls\":" + calls_json(calls) + "}";
+    } else if (cmd == "touch") {   // touch <raw x> <raw y> <now>
+      int x, y;
+      long long now;
+      ss >> x >> y >> now;
+      std::vector<std::string> calls;
+      const int a = sc_touch(x, y, now, collect, &calls);
+      reply = std::string("{\"action\":\"") + sc_action_name(a) + "\",\"calls\":" + calls_json(calls) + "}";
+    } else if (cmd == "calibrate") {
+      sc_calibrate();
+    } else if (cmd == "touchcal") {
+      float v[6];
+      const int ok = sc_touch_cal(v);
+      char b[200];
+      snprintf(b, sizeof b, "{\"valid\":%d,\"map\":[%.4f,%.4f,%.1f,%.4f,%.4f,%.1f]}", ok, v[0], v[1], v[2], v[3], v[4], v[5]);
+      reply = b;
     } else if (cmd == "button") {
       std::string what;
       long long now;

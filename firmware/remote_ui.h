@@ -102,7 +102,7 @@ enum class Mode { OFF, IDLE, PLAYING };
 // Network as the setup screens see it.
 enum class Net : uint8_t { CONNECTING, CONNECTED, HOTSPOT };
 // Which onboarding screen replaces the remote, if any.
-enum class Setup : uint8_t { NONE, WIFI, CONFIGURE, HOME_ASSISTANT };
+enum class Setup : uint8_t { NONE, WIFI, CONFIGURE, HOME_ASSISTANT, CALIBRATE };
 // Light tile icons, by settings index.
 enum LightIcon : uint8_t { ICON_KIND_BULB = 0, ICON_KIND_CEILING = 1, ICON_KIND_FLOOR = 2, ICON_KIND_STAR = 3 };
 inline uint8_t light_icon_index(const std::string &name) {
@@ -144,10 +144,12 @@ struct Model {
   std::string ip, device_name = "sticky-remote", ap_ssid = "Sticky-Remote", ap_password;
   std::string setup_url = "the Sticky setup page";   // where to finish setup (web wizard)
   bool ha_paired = true;   // the firmware loads the remembered value at boot
+  bool calibrating = false; // the touch calibration screen is up
 
   /// The setup hotspot is up: show how to join it. Connected to Wi-Fi but
   /// never added to Home Assistant: show how to add it.
   Setup setup() const {
+    if (calibrating && !sleeping) return Setup::CALIBRATE;
     if (net == Net::HOTSPOT) return Setup::WIFI;
     if (!configured) return Setup::CONFIGURE;
     if (net == Net::CONNECTED && !ha_paired && !online) return Setup::HOME_ASSISTANT;
@@ -288,6 +290,129 @@ inline std::string wifi_qr_text(const std::string &ssid, const std::string &pass
 inline void request_now() {
   request();
   redraw().requested_at = esphome::millis() - 1000;
+}
+
+// --- Touch calibration -----------------------------------------------------------
+// Maps the touch chip's raw coordinates to screen pixels with an affine map
+// fitted to taps on five targets, so it covers swapped axes, mirroring, scale
+// and offset at once. Until a calibration is saved, ESPHome's own transform
+// (the touch_* substitutions) is used.
+struct TouchCal {
+  bool valid = false;
+  float ax = 0, bx = 0, cx = 0;   // x = ax*rx + bx*ry + cx
+  float ay = 0, by = 0, cy = 0;   // y = ay*rx + by*ry + cy
+};
+
+inline TouchCal &touch_cal() {
+  static TouchCal c;
+  return c;
+}
+
+inline void map_touch(const TouchCal &c, int rx, int ry, int &x, int &y) {
+  x = std::max(0, std::min(W - 1, (int) lroundf(c.ax * rx + c.bx * ry + c.cx)));
+  y = std::max(0, std::min(H - 1, (int) lroundf(c.ay * rx + c.by * ry + c.cy)));
+}
+
+/// How the raw axes relate to the screen's (diagnostic: the fitted map itself is what gets stored).
+inline void describe_cal(const TouchCal &c, bool &swap, bool &mirror_x, bool &mirror_y) {
+  swap = std::fabs(c.bx) > std::fabs(c.ax);   // screen x follows raw y
+  mirror_x = (swap ? c.bx : c.ax) < 0;
+  mirror_y = (swap ? c.ay : c.by) < 0;
+}
+
+constexpr int CAL_N = 5;
+constexpr int CAL_MAX_ERR = 40;   // px; worse than this and the taps didn't line up
+constexpr int CAL_T[CAL_N][2] = {{50, 50}, {W - 50, 50}, {W - 50, H - 50}, {50, H - 50}, {W / 2, H / 2}};
+
+struct Calib {
+  int step = 0;                  // next target; CAL_N = fitted, test mode
+  int raw[CAL_N][2] = {};
+  TouchCal fit;
+  float max_err = 0;
+  bool have_test = false;
+  int test_rx = 0, test_ry = 0, test_x = 0, test_y = 0;
+};
+
+inline Calib &calib() {
+  static Calib k;
+  return k;
+}
+
+inline void calib_start() {
+  calib() = Calib{};
+  model().calibrating = true;
+  request(true);
+}
+
+inline void calib_stop() {
+  model().calibrating = false;
+  request(true);
+}
+
+// Least squares for v = a*rx + b*ry + c over the taps (3x3 normal equations, Cramer).
+inline bool calib_solve(const Calib &k, int axis, float &a, float &b, float &c) {
+  double A[3][3] = {}, r[3] = {};
+  for (int i = 0; i < CAL_N; i++) {
+    const double v[3] = {(double) k.raw[i][0], (double) k.raw[i][1], 1.0};
+    for (int p = 0; p < 3; p++) {
+      for (int q = 0; q < 3; q++) A[p][q] += v[p] * v[q];
+      r[p] += v[p] * CAL_T[i][axis];
+    }
+  }
+  auto det = [](double m[3][3]) {
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) +
+           m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+  };
+  const double d = det(A);
+  if (std::fabs(d) < 1e-6) return false;
+  double out[3];
+  for (int col = 0; col < 3; col++) {
+    double M2[3][3];
+    for (int p = 0; p < 3; p++)
+      for (int q = 0; q < 3; q++) M2[p][q] = q == col ? r[p] : A[p][q];
+    out[col] = det(M2) / d;
+  }
+  a = (float) out[0];
+  b = (float) out[1];
+  c = (float) out[2];
+  return true;
+}
+
+inline void calib_fit(Calib &k) {
+  TouchCal f;
+  f.valid = calib_solve(k, 0, f.ax, f.bx, f.cx) && calib_solve(k, 1, f.ay, f.by, f.cy);
+  k.max_err = 0;
+  if (f.valid) {
+    for (int i = 0; i < CAL_N; i++) {
+      const float ex = f.ax * k.raw[i][0] + f.bx * k.raw[i][1] + f.cx - CAL_T[i][0];
+      const float ey = f.ay * k.raw[i][0] + f.by * k.raw[i][1] + f.cy - CAL_T[i][1];
+      k.max_err = std::max(k.max_err, std::sqrt(ex * ex + ey * ey));
+    }
+    f.valid = k.max_err <= CAL_MAX_ERR;
+  }
+  k.fit = f;
+  bool swap, mx, my;
+  describe_cal(f, swap, mx, my);
+  ESP_LOGI("touch", "calibration: %s, max error %.0f px, swap_xy=%d mirror_x=%d mirror_y=%d, "
+           "x=%.4f*rx%+.4f*ry%+.1f y=%.4f*rx%+.4f*ry%+.1f", f.valid ? "good" : "rejected", k.max_err, swap, mx, my,
+           f.ax, f.bx, f.cx, f.ay, f.by, f.cy);
+}
+
+/// A tap while calibrating, in raw touch-chip coordinates.
+inline void calib_tap(int rx, int ry) {
+  auto &k = calib();
+  ESP_LOGI("touch", "calibration tap %d: raw x=%d y=%d", k.step + 1, rx, ry);
+  if (k.step < CAL_N) {
+    k.raw[k.step][0] = rx;
+    k.raw[k.step][1] = ry;
+    if (++k.step == CAL_N) calib_fit(k);
+  } else if (k.fit.valid) {
+    k.have_test = true;
+    k.test_rx = rx;
+    k.test_ry = ry;
+    map_touch(k.fit, rx, ry, k.test_x, k.test_y);
+  }
+  request();
 }
 
 // Shows `p` as pressed on the Remote page; feedback_tick() clears it.
@@ -872,6 +997,49 @@ inline void draw_sleep_banner(Ctx &c) {
   c.it.print(M + 76, cy, c.f.t22, c.paper, TextAlign::CENTER_LEFT, "Asleep · press a button");
 }
 
+inline void draw_cal_target(Ctx &c, int x, int y) {
+  c.it.filled_circle(x, y, 24, c.ink);
+  c.it.filled_circle(x, y, 20, c.paper);
+  c.it.filled_rectangle(x - 34, y - 1, 69, 3, c.ink);
+  c.it.filled_rectangle(x - 1, y - 34, 3, 69, c.ink);
+  c.it.filled_circle(x, y, 5, c.ink);
+}
+
+inline void draw_calibrate(Ctx &c) {
+  const auto &k = calib();
+  char buf[96];
+  c.it.print(W / 2, 120, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Touch calibration");
+  if (k.step < CAL_N) {
+    snprintf(buf, sizeof buf, "Tap the centre of the cross · %d of %d", k.step + 1, CAL_N);
+    print_wrapped(c, M + 30, 176, c.f.t20, c.ink, buf, W - 2 * M - 60, 27);
+    print_wrapped(c, M + 30, 520, c.f.t18, c.ink, "Up: start again · Down: cancel", W - 2 * M - 60, 24);
+    draw_cal_target(c, CAL_T[k.step][0], CAL_T[k.step][1]);
+    return;
+  }
+  bool swap, mx, my;
+  describe_cal(k.fit, swap, mx, my);
+  int y = 176;
+  if (!k.fit.valid) {
+    snprintf(buf, sizeof buf, "The taps didn't line up (off by %d px). Press Up to start again, or Down to cancel.",
+             (int) k.max_err);
+    print_wrapped(c, M + 30, y, c.f.t20, c.ink, buf, W - 2 * M - 60, 27);
+    return;
+  }
+  y = print_wrapped(c, M + 30, y, c.f.t20, c.ink, "Tap anywhere: a dot should land under your finger.", W - 2 * M - 60, 27);
+  y = print_wrapped(c, M + 30, y + 10, c.f.t22, c.ink, "AI: save · Up: again · Down: cancel", W - 2 * M - 60, 28);
+  snprintf(buf, sizeof buf, "swap_xy %s, mirror_x %s, mirror_y %s", swap ? "yes" : "no", mx ? "yes" : "no",
+           my ? "yes" : "no");
+  y = print_wrapped(c, M + 30, y + 14, c.f.t18, c.ink, buf, W - 2 * M - 60, 24);
+  snprintf(buf, sizeof buf, "Error %d px. Raw x=%d y=%d at the first cross.", (int) k.max_err, k.raw[0][0], k.raw[0][1]);
+  y = print_wrapped(c, M + 30, y, c.f.t18, c.ink, buf, W - 2 * M - 60, 24);
+  if (k.have_test) {
+    snprintf(buf, sizeof buf, "Last tap: raw %d, %d -> screen %d, %d", k.test_rx, k.test_ry, k.test_x, k.test_y);
+    print_wrapped(c, M + 30, y + 6, c.f.t18, c.ink, buf, W - 2 * M - 60, 24);
+    c.it.filled_circle(k.test_x, k.test_y, 12, c.ink);
+    c.it.filled_circle(k.test_x, k.test_y, 4, c.paper);
+  }
+}
+
 inline void draw_screen(Ctx &c, const Model &m, esphome::runtime_image::RuntimeImage *poster,
                         int64_t now_epoch, bool time_valid, int hour, int minute, const char *room,
                         const char *name1, const char *name2, const char *infuse_label,
@@ -882,6 +1050,7 @@ inline void draw_screen(Ctx &c, const Model &m, esphome::runtime_image::RuntimeI
     case Setup::WIFI: return draw_setup_wifi(c, m);
     case Setup::CONFIGURE: return draw_setup_configure(c, m);
     case Setup::HOME_ASSISTANT: return draw_setup_ha(c, m);
+    case Setup::CALIBRATE: return draw_calibrate(c);
     case Setup::NONE: break;
   }
   draw_status(c, m, room, time_valid, hour, minute);
@@ -1165,6 +1334,7 @@ struct Actions {
   virtual void remote_command(const char *command) = 0;
   virtual void volume(bool up) = 0;
   virtual void open_infuse() = 0;
+  virtual void save_touch_cal(const TouchCal &cal) {}   // the firmware stores it
 };
 
 inline Actions *&actions() {
@@ -1234,11 +1404,34 @@ inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
   return a;
 }
 
+/// A touch from the chip: raw coordinates (rx, ry) and ESPHome's transformed
+/// ones (x, y). Calibration, when saved, replaces ESPHome's transform.
+inline Action handle_touch(int rx, int ry, int x, int y, int64_t now_epoch, Actions &act) {
+  if (model().calibrating) {
+    act.click();
+    calib_tap(rx, ry);
+    return NONE;
+  }
+  if (touch_cal().valid) map_touch(touch_cal(), rx, ry, x, y);
+  return handle_tap(x, y, now_epoch, act);
+}
+
 // Physical buttons: AI = play/pause (or turn on when off), Up/Down = volume.
+// While calibrating: AI saves, Up starts again, Down cancels.
 enum Button { BTN_AI, BTN_UP, BTN_DOWN };
 
 inline void handle_button(Button b, int64_t now_epoch, Actions &act) {
   auto &m = model();
+  if (m.calibrating && !m.sleeping) {
+    if (b == BTN_UP) return calib_start();
+    if (b == BTN_DOWN) return calib_stop();
+    if (calib().step == CAL_N && calib().fit.valid) {
+      touch_cal() = calib().fit;
+      act.save_touch_cal(touch_cal());
+      calib_stop();
+    }
+    return;
+  }
   if (m.sleeping || m.in_setup()) return;
   switch (b) {
     case BTN_AI:

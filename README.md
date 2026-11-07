@@ -11,8 +11,8 @@ the browser, with no tools to install.
 computer, plug the Sticky in over USB-C and follow the steps. `?demo` on that
 page runs the whole wizard without a Sticky or a Home Assistant.
 
-> Status: runs on a real Sticky (display, Wi-Fi, Home Assistant, touch since
-> 0.2.2). Sleep, wake and battery life are still to be confirmed; see
+> Status: runs on a real Sticky (display, Wi-Fi, Home Assistant, touch
+> calibration since 0.2.3). Sleep, wake and battery life are still to be confirmed; see
 > [What to check on a real device](#what-to-check-on-a-real-device).
 
 ## What it does
@@ -137,6 +137,9 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 - `{"sticky":"setup","cmd":"set","settings":{…},"wifi":{"ssid":"…","pass":"…"}}`
   saves either part and restarts: `{"ok":true,"saved":true,"restarting":true}`.
 - `{"sticky":"setup","cmd":"reset"}` clears the settings.
+- `{"sticky":"setup","cmd":"calibrate"}` opens the touch calibration;
+  `{"sticky":"setup","cmd":"touch_reset"}` forgets it. The info line's
+  `touch` object says whether the Sticky is calibrated, and gives the map.
 - Setting fields: `player remote player_name app app_label light1 light1_name
   light1_icon light2 light2_name light2_icon room ha_url font_set`. Icons are
   `bulb`, `ceiling`, `floor` or `star`; `font_set` is `inter` or `trmnl`.
@@ -145,10 +148,13 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 ## What to check on a real device
 
 1. **Orientation**: if the screen is upside down, set `rotation: "270"`.
-2. **Touch axes**: fixed in 0.2.2 (0.2.1 had taps mirrored top to bottom).
-   Every tap is logged as `touch x=… y=…`; the top-left corner should read
-   about 0, 0. `touch_swap_xy`, `touch_mirror_x` and `touch_mirror_y` adjust
-   it.
+2. **Touch**: hold **Down for 3 s** to open the touch calibration (any
+   screen, setup included; or the USB `calibrate` command). Tap the five
+   crosses, check that test taps land under your finger, then press **AI** to
+   save (Up starts again, Down cancels). The map fitted to the chip's raw
+   coordinates is stored on the device, survives updates, and replaces the
+   `touch_*` substitutions; `touch_reset` over USB forgets it. Every tap is
+   logged as `touch x=… y=… raw x=… y=…`.
 3. **Power latch**: the device stays on after you let go of the button.
 4. **Sleep and wake**: after 3 minutes on battery it shows "Asleep · press a
    button", and any button wakes it. On USB it stays awake.

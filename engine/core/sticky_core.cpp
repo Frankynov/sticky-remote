@@ -174,6 +174,21 @@ int sc_tap(int x, int y, int64_t now, sc_call_fn fn, void *ctx) {
   return (int) remote_ui::handle_tap(x, y, now, g_actions);
 }
 
+int sc_touch(int rx, int ry, int64_t now, sc_call_fn fn, void *ctx) {
+  g_actions.fn = fn;
+  g_actions.ctx = ctx;
+  return (int) remote_ui::handle_touch(rx, ry, rx, ry, now, g_actions);
+}
+
+void sc_calibrate(void) { remote_ui::calib_start(); }
+
+int sc_touch_cal(float out[6]) {
+  const auto &c = remote_ui::touch_cal();
+  const float v[6] = {c.ax, c.bx, c.cx, c.ay, c.by, c.cy};
+  for (int i = 0; i < 6; i++) out[i] = v[i];
+  return c.valid ? 1 : 0;
+}
+
 void sc_button(int button, int64_t now, sc_call_fn fn, void *ctx) {
   g_actions.fn = fn;
   g_actions.ctx = ctx;

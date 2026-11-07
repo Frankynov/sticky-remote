@@ -44,6 +44,13 @@ typedef void (*sc_call_fn)(void *context, const char *call);
 /// A tap at panel coordinates. Returns the action (see sc_action_name).
 int sc_tap(int x, int y, int64_t now_epoch, sc_call_fn fn, void *context);
 void sc_button(int button, int64_t now_epoch, sc_call_fn fn, void *context);
+/// A touch in the chip's raw coordinates (with no ESPHome transform, raw = panel
+/// coordinates). Goes through the saved touch calibration, or the calibration screen.
+int sc_touch(int raw_x, int raw_y, int64_t now_epoch, sc_call_fn fn, void *context);
+/// Shows the touch calibration screen (the firmware: hold Down for 3 s).
+void sc_calibrate(void);
+/// The saved calibration's map (ax bx cx ay by cy); returns 1 if there is one.
+int sc_touch_cal(float out[6]);
 const char *sc_action_name(int action);
 
 /// The firmware's 5-second tick: requests a redraw when the clock or seek-bar minute changed.
