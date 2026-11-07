@@ -45,8 +45,7 @@ substitutions:
 
   # Portrait. If the picture is upside down on the device, use 270 instead.
   rotation: "90"
-  # Touch axes for portrait, used until a touch calibration is saved on the
-  # device (hold Down for 3 s on the device, or the USB "calibrate" command).
+  # ESPHome's touch transform; only used when touch_map is empty.
   touch_swap_xy: "false"
   touch_mirror_x: "false"
   touch_mirror_y: "false"
@@ -55,6 +54,10 @@ substitutions:
   # Sticky (2026-11-07): the chip reports portrait with y reversed. Empty = use
   # the touch_* transform above.
   touch_map: "1,0,0,0,-1,799"
+  # Development only: "true" enables the touch calibration screen (hold Down
+  # 3 s, or the USB "calibrate" command) and uses a calibration saved on the
+  # device instead of touch_map. Keep "false" in released firmware.
+  touch_calibration: "false"
 
   # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (chosen on the
   # Sticky's hotspot or sent over USB). See wifi-builtin.yaml / wifi-setup.yaml.
@@ -112,6 +115,7 @@ esphome:
             d.ha_url = "${ha_base_url}";
             d.font_set = "${font_set}";
             sticky::load();
+            remote_ui::calibration_enabled() = ${touch_calibration};
             sticky::set_default_touch_cal("${touch_map}");
             sticky::load_touch_cal();
             sticky::apply_to_ui();
@@ -375,7 +379,7 @@ binary_sensor:
       - lambda: |-
           id(last_activity) = millis();
           if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
-    # Hold 3 s: touch calibration (from any screen, setup screens included).
+    # Hold 3 s: touch calibration, in development builds only (touch_calibration).
     on_multi_click:
       - timing:
           - ON for at least 3s

@@ -338,7 +338,15 @@ inline Calib &calib() {
   return k;
 }
 
+/// The calibration screen is a development tool: off in released firmware
+/// (the touch_calibration substitution), so users can't open it by accident.
+inline bool &calibration_enabled() {
+  static bool b = false;
+  return b;
+}
+
 inline void calib_start() {
+  if (!calibration_enabled()) return;
   calib() = Calib{};
   model().calibrating = true;
   request(true);

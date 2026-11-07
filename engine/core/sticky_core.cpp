@@ -180,7 +180,10 @@ int sc_touch(int rx, int ry, int64_t now, sc_call_fn fn, void *ctx) {
   return (int) remote_ui::handle_touch(rx, ry, rx, ry, now, g_actions);
 }
 
-void sc_calibrate(void) { remote_ui::calib_start(); }
+void sc_calibrate(void) {
+  remote_ui::calibration_enabled() = true;   // the engine is a development tool
+  remote_ui::calib_start();
+}
 
 int sc_touch_cal(float out[6]) {
   const auto &c = remote_ui::touch_cal();

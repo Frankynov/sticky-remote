@@ -16,8 +16,8 @@
 //   {"sticky":"setup","cmd":"set","settings":{...},"wifi":{"ssid":"…","pass":"…"}}
 //                                                      -> {"ok":true,"saved":true,"restarting":true}
 //   {"sticky":"setup","cmd":"reset"}                   -> clears the settings, restarts
-//   {"sticky":"setup","cmd":"calibrate"}               -> shows the touch calibration screen
-//   {"sticky":"setup","cmd":"touch_reset"}             -> forgets the touch calibration
+//   {"sticky":"setup","cmd":"calibrate"}               -> shows the touch calibration screen (dev builds)
+//   {"sticky":"setup","cmd":"touch_reset"}             -> forgets the touch calibration (dev builds)
 // The board also sends the info line ("event":"hello") once at boot. Send at
 // most 64 bytes every ~10 ms: the receive buffer is small.
 
@@ -147,7 +147,8 @@ inline void load_touch_cal() {
   auto &c = remote_ui::touch_cal();
   c = default_touch_cal();
   touch_cal_stored() = false;
-  if (cal_pref().load(&st) && st.magic == CAL_MAGIC) {
+  // With the calibration tool off (released firmware), only the built-in map counts.
+  if (remote_ui::calibration_enabled() && cal_pref().load(&st) && st.magic == CAL_MAGIC) {
     touch_cal_stored() = true;
     c.valid = true;
     c.ax = st.v[0]; c.bx = st.v[1]; c.cx = st.v[2];
@@ -370,10 +371,12 @@ inline void handle(const std::string &line) {
       root["restarting"] = true;
     }));
     restart_at() = esphome::millis() + 800;
-  } else if (cmd == "calibrate") {        // shows the touch calibration screen
+  } else if (cmd == "calibrate") {        // shows the touch calibration screen (dev builds)
+    if (!remote_ui::calibration_enabled()) return send_error("Touch calibration isn't in this firmware.");
     remote_ui::calib_start();
     send_line(info("info"));
-  } else if (cmd == "touch_reset") {      // forgets the calibration
+  } else if (cmd == "touch_reset") {      // forgets the calibration (dev builds)
+    if (!remote_ui::calibration_enabled()) return send_error("Touch calibration isn't in this firmware.");
     save_touch_cal(remote_ui::TouchCal{});
     send_line(info("info"));
   } else if (cmd == "reset") {
