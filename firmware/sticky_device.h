@@ -125,19 +125,38 @@ inline esphome::ESPPreferenceObject &cal_pref() {
   return p;
 }
 
+/// The map used when none is saved on the device (the touch_map substitution).
+inline remote_ui::TouchCal &default_touch_cal() {
+  static remote_ui::TouchCal c;
+  return c;
+}
+
+inline void set_default_touch_cal(const char *map) {
+  auto &c = default_touch_cal();
+  c = remote_ui::TouchCal{};
+  c.valid = map != nullptr && sscanf(map, "%f,%f,%f,%f,%f,%f", &c.ax, &c.bx, &c.cx, &c.ay, &c.by, &c.cy) == 6;
+}
+
+inline bool &touch_cal_stored() {
+  static bool b = false;
+  return b;
+}
+
 inline void load_touch_cal() {
   StoredCal st{};
   auto &c = remote_ui::touch_cal();
-  c = remote_ui::TouchCal{};
+  c = default_touch_cal();
+  touch_cal_stored() = false;
   if (cal_pref().load(&st) && st.magic == CAL_MAGIC) {
+    touch_cal_stored() = true;
     c.valid = true;
     c.ax = st.v[0]; c.bx = st.v[1]; c.cx = st.v[2];
     c.ay = st.v[3]; c.by = st.v[4]; c.cy = st.v[5];
   }
-  ESP_LOGI(TAG, "touch calibration: %s", c.valid ? "stored" : "none (YAML transform)");
+  ESP_LOGI(TAG, "touch calibration: %s", touch_cal_stored() ? "stored" : c.valid ? "default map" : "none (YAML transform)");
 }
 
-/// Saves a calibration; an invalid one clears it (back to the YAML transform).
+/// Saves a calibration; an invalid one clears it (back to the default map).
 inline bool save_touch_cal(const remote_ui::TouchCal &c) {
   StoredCal st{};
   if (c.valid) {
@@ -145,7 +164,8 @@ inline bool save_touch_cal(const remote_ui::TouchCal &c) {
     const float v[6] = {c.ax, c.bx, c.cx, c.ay, c.by, c.cy};
     memcpy(st.v, v, sizeof v);
   }
-  remote_ui::touch_cal() = c;
+  remote_ui::touch_cal() = c.valid ? c : default_touch_cal();
+  touch_cal_stored() = c.valid;
   return cal_pref().save(&st) && esphome::global_preferences->sync();
 }
 
@@ -276,7 +296,8 @@ inline std::string info(const char *event) {
     {
       const auto &tc = remote_ui::touch_cal();
       JsonObject touch = root["touch"].to<JsonObject>();
-      touch["calibrated"] = tc.valid;
+      touch["calibrated"] = touch_cal_stored();
+      touch["source"] = touch_cal_stored() ? "stored" : tc.valid ? "default" : "yaml";
       touch["calibrating"] = m.calibrating;
       if (tc.valid) {
         bool swap, mx, my;

@@ -148,12 +148,14 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 ## What to check on a real device
 
 1. **Orientation**: if the screen is upside down, set `rotation: "270"`.
-2. **Touch**: hold **Down for 3 s** to open the touch calibration (any
+2. **Touch**: the GT911 reports portrait with y reversed; that map is built
+   in (`touch_map`, measured on a real Sticky), so taps work out of the box.
+   If they're off on yours, hold **Down for 3 s** to open the touch calibration (any
    screen, setup included; or the USB `calibrate` command). Tap the five
    crosses, check that test taps land under your finger, then press **AI** to
    save (Up starts again, Down cancels). The map fitted to the chip's raw
    coordinates is stored on the device, survives updates, and replaces the
-   `touch_*` substitutions; `touch_reset` over USB forgets it. Every tap is
+   built-in map; `touch_reset` over USB goes back to it. Every tap is
    logged as `touch x=… y=… raw x=… y=…`.
 3. **Power latch**: the device stays on after you let go of the button.
 4. **Sleep and wake**: after 3 minutes on battery it shows "Asleep · press a

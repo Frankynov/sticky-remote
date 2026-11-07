@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.2.3"
+  firmware_version: "0.2.4"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -50,6 +50,11 @@ substitutions:
   touch_swap_xy: "false"
   touch_mirror_x: "false"
   touch_mirror_y: "false"
+  # Raw GT911 -> screen map used until a calibration is saved: "ax,bx,cx,ay,by,cy"
+  # for x = ax*rx + bx*ry + cx, y = ay*rx + by*ry + cy. Measured on a real
+  # Sticky (2026-11-07): the chip reports portrait with y reversed. Empty = use
+  # the touch_* transform above.
+  touch_map: "1,0,0,0,-1,799"
 
   # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (chosen on the
   # Sticky's hotspot or sent over USB). See wifi-builtin.yaml / wifi-setup.yaml.
@@ -107,6 +112,7 @@ esphome:
             d.ha_url = "${ha_base_url}";
             d.font_set = "${font_set}";
             sticky::load();
+            sticky::set_default_touch_cal("${touch_map}");
             sticky::load_touch_cal();
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
