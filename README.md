@@ -11,8 +11,8 @@ the browser, with no tools to install.
 computer, plug the Sticky in over USB-C and follow the steps. `?demo` on that
 page runs the whole wizard without a Sticky or a Home Assistant.
 
-> Status: built against the Sticky's published hardware description and tested
-> in simulation. Not yet run on a real device; see
+> Status: runs on a real Sticky (display, Wi-Fi, Home Assistant, touch since
+> 0.2.2). Sleep, wake and battery life are still to be confirmed; see
 > [What to check on a real device](#what-to-check-on-a-real-device).
 
 ## What it does
@@ -145,9 +145,10 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 ## What to check on a real device
 
 1. **Orientation**: if the screen is upside down, set `rotation: "270"`.
-2. **Touch axes**: every tap is logged as `touch x=… y=…`. The top-left corner
-   should read about 0, 0. Use `touch_swap_xy`, `touch_mirror_x` and
-   `touch_mirror_y` to fix it.
+2. **Touch axes**: fixed in 0.2.2 (0.2.1 had taps mirrored top to bottom).
+   Every tap is logged as `touch x=… y=…`; the top-left corner should read
+   about 0, 0. `touch_swap_xy`, `touch_mirror_x` and `touch_mirror_y` adjust
+   it.
 3. **Power latch**: the device stays on after you let go of the button.
 4. **Sleep and wake**: after 3 minutes on battery it shows "Asleep · press a
    button", and any button wakes it. On USB it stays awake.

@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.2.1"
+  firmware_version: "0.2.2"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -45,8 +45,9 @@ substitutions:
 
   # Portrait. If the picture is upside down on the device, use 270 instead.
   rotation: "90"
-  # Touch axes for portrait: flip these if taps land mirrored (see README).
-  touch_swap_xy: "false"
+  # Touch axes for portrait. The GT911 reports x and y swapped relative to the
+  # panel (Seeed sets swap_xy too); flip the mirrors if taps still land mirrored.
+  touch_swap_xy: "true"
   touch_mirror_x: "false"
   touch_mirror_y: "false"
 
