@@ -1,0 +1,7 @@
+# Experimental four-grey panel: changes the `epd` display (sticky-remote.yaml).
+# Partial refreshes stay black and white and turn the whole panel black and
+# white until the next full refresh (remote_ui.h dithers for that).
+display:
+  - id: !extend epd
+    model: seeed-reterminal-sticky-gray4
+    monochrome_partial_updates: true

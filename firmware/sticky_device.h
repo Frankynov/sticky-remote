@@ -21,8 +21,12 @@
 // The board also sends the info line ("event":"hello") once at boot. Send at
 // most 64 bytes every ~10 ms: the receive buffer is small.
 
+#include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
+
+#include <JPEGDEC.h>
 
 #include "esphome/components/api/api_server.h"
 #include "esphome/components/json/json_util.h"
@@ -36,6 +40,12 @@
 #include "esphome/core/preferences.h"
 
 #include "driver/uart.h"
+#include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "esp_http_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "remote_ui.h"
 
 namespace sticky {
@@ -201,24 +211,255 @@ inline void apply_to_ui() {
   remote_ui::apply("app_button", s.app);
 }
 
-// --- Home Assistant subscriptions ------------------------------------------------
+// --- Artwork ------------------------------------------------------------------------
+// Downloaded and decoded in a task of its own, so the main loop (touch, beeps,
+// the display) never waits on DNS, a TLS handshake or a JPEG decode: on the main
+// loop those froze the Sticky for seconds. JPEGs are decoded at 1/2, 1/4 or 1/8
+// scale straight to about the size they're drawn at. Anything else (PNG) falls
+// back to ESPHome's online_image, which still blocks the loop while it loads.
 inline esphome::online_image::OnlineImage *&poster() {
   static esphome::online_image::OnlineImage *p = nullptr;
   return p;
 }
 
+constexpr size_t MAX_ARTWORK = 3 * 1024 * 1024;
+
+struct PosterLoader {
+  enum Result : uint8_t { NONE, READY, NOT_JPEG, FAILED };
+  std::mutex mu;                 // guards the request and result fields
+  TaskHandle_t task = nullptr;
+  std::string want_url;          // request
+  uint32_t want_gen = 0;
+  uint8_t *res_px = nullptr;     // result, handed to the main loop
+  int res_w = 0, res_h = 0;
+  uint32_t res_gen = 0;
+  Result res = NONE;
+  // Main loop only: what's shown.
+  uint8_t *px = nullptr;
+  int w = 0, h = 0;
+  std::string url;               // the current artwork's URL
+  bool fallback = false;         // online_image holds the current artwork
+};
+
+inline PosterLoader &loader() {
+  static PosterLoader l;
+  return l;
+}
+
+struct JpegOut {
+  uint8_t *px;
+  int w, h;
+};
+
+inline int jpeg_draw(JPEGDRAW *d) {
+  auto *o = static_cast<JpegOut *>(d->pUser);
+  const auto *src = reinterpret_cast<const uint8_t *>(d->pPixels);
+  const int cols = std::min(d->iWidthUsed, o->w - d->x);
+  for (int y = 0; y < d->iHeight && cols > 0; y++) {
+    const int oy = d->y + y;
+    if (oy >= o->h) break;
+    memcpy(o->px + (size_t) oy * o->w + d->x, src + (size_t) y * d->iWidth, cols);
+  }
+  return 1;
+}
+
+/// Runs in the loader task.
+inline PosterLoader::Result load_artwork(const std::string &url, uint8_t *&out, int &ow, int &oh) {
+  using R = PosterLoader::Result;
+  esp_http_client_config_t cfg{};
+  cfg.url = url.c_str();
+  cfg.timeout_ms = 10000;
+  cfg.disable_auto_redirect = true;   // the proxy URL carries its own token
+  cfg.buffer_size = 2048;
+#ifdef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+  cfg.crt_bundle_attach = esp_crt_bundle_attach;
+#endif
+  esp_http_client_handle_t http = esp_http_client_init(&cfg);
+  if (http == nullptr) return R::FAILED;
+  const uint32_t t0 = esphome::millis();
+  uint8_t *data = nullptr;
+  size_t n = 0, cap = 0;
+  bool ok = false;
+  if (esp_http_client_open(http, 0) == ESP_OK) {
+    const int64_t len = esp_http_client_fetch_headers(http);
+    const int status = esp_http_client_get_status_code(http);
+    if (status != 200) {
+      ESP_LOGW(TAG, "artwork: HTTP %d", status);
+    } else if (len <= (int64_t) MAX_ARTWORK) {
+      cap = len > 0 ? (size_t) len : 64 * 1024;
+      data = static_cast<uint8_t *>(heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      while (data != nullptr) {
+        if (n == cap) {
+          if (cap >= MAX_ARTWORK) break;
+          cap = std::min(cap * 2, MAX_ARTWORK);
+          auto *bigger = static_cast<uint8_t *>(heap_caps_realloc(data, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+          if (bigger == nullptr) break;
+          data = bigger;
+        }
+        const int got = esp_http_client_read(http, reinterpret_cast<char *>(data) + n, cap - n);
+        if (got < 0) break;
+        if (got == 0) {
+          ok = len <= 0 || n == (size_t) len;
+          break;
+        }
+        n += got;
+      }
+    }
+  }
+  esp_http_client_cleanup(http);
+  R r = R::FAILED;
+  if (ok && n >= 4 && !(data[0] == 0xFF && data[1] == 0xD8)) {
+    r = R::NOT_JPEG;
+  } else if (ok && n >= 4) {
+    auto *jpeg = new JPEGDEC();   // ~20 KB of tables and buffers
+    if (jpeg->openRAM(data, (int) n, jpeg_draw) && jpeg->getJPEGType() != JPEG_MODE_PROGRESSIVE) {
+      const int sw = jpeg->getWidth(), sh = jpeg->getHeight();
+      // The largest JPEG scale that still leaves at least the size it's drawn at.
+      const float fit = std::min((float) remote_ui::POSTER_W / sw, (float) remote_ui::POSTER_H / sh);
+      int scale = 1;
+      for (int s : {8, 4, 2}) {
+        if (fit * s <= 1.0f) {
+          scale = s;
+          break;
+        }
+      }
+      JpegOut o{nullptr, (sw + scale - 1) / scale, (sh + scale - 1) / scale};
+      o.px = static_cast<uint8_t *>(heap_caps_calloc((size_t) o.w * o.h, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      if (o.px != nullptr) {
+        jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
+        jpeg->setUserPointer(&o);
+        const int opt = scale == 8 ? JPEG_SCALE_EIGHTH : scale == 4 ? JPEG_SCALE_QUARTER : scale == 2 ? JPEG_SCALE_HALF : 0;
+        if (jpeg->decode(0, 0, opt)) {
+          out = o.px;
+          ow = o.w;
+          oh = o.h;
+          r = R::READY;
+          ESP_LOGI(TAG, "artwork: %dx%d JPEG, %u bytes, decoded at 1/%d to %dx%d in %u ms", sw, sh, (unsigned) n,
+                   scale, o.w, o.h, (unsigned) (esphome::millis() - t0));
+        } else {
+          free(o.px);
+        }
+      }
+      jpeg->close();
+    } else {
+      ESP_LOGW(TAG, "artwork: not a JPEG it can decode (progressive?)");
+    }
+    delete jpeg;
+  } else {
+    ESP_LOGW(TAG, "artwork: download failed after %u ms (%u bytes)", (unsigned) (esphome::millis() - t0), (unsigned) n);
+  }
+  free(data);
+  return r;
+}
+
+inline void poster_task(void *) {
+  auto &L = loader();
+  for (;;) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    std::string url;
+    uint32_t gen;
+    {
+      std::lock_guard<std::mutex> g(L.mu);
+      url = L.want_url;
+      gen = L.want_gen;
+    }
+    if (url.empty()) continue;
+    uint8_t *px = nullptr;
+    int w = 0, h = 0;
+    const auto r = load_artwork(url, px, w, h);
+    std::lock_guard<std::mutex> g(L.mu);
+    if (gen != L.want_gen) {   // superseded: the newer request is already notified
+      free(px);
+      continue;
+    }
+    free(L.res_px);
+    L.res_px = px;
+    L.res_w = w;
+    L.res_h = h;
+    L.res_gen = gen;
+    L.res = r;
+  }
+}
+
+/// Starts loading `picture` (HA's entity_picture); an empty one cancels.
 inline void fetch_poster(const std::string &picture) {
-  auto *img = poster();
-  if (img == nullptr || picture.empty()) return;
+  auto &L = loader();
   std::string url = picture;
-  if (picture.rfind("http", 0) != 0) {
+  if (!picture.empty() && picture.rfind("http", 0) != 0) {
     std::string base = settings().ha_url;
     while (!base.empty() && base.back() == '/') base.pop_back();
-    if (base.empty()) return;
-    url = base + picture;
+    url = base.empty() ? std::string() : base + picture;
   }
-  img->set_url(url);
-  img->update();
+  L.url = url;
+  L.fallback = false;
+  {
+    std::lock_guard<std::mutex> g(L.mu);
+    L.want_url = url;
+    L.want_gen++;
+  }
+  if (url.empty()) return;
+  if (L.task == nullptr)
+    xTaskCreatePinnedToCore(poster_task, "artwork", 12 * 1024, nullptr, 1, &L.task, 0);
+  if (L.task != nullptr) xTaskNotifyGive(L.task);
+}
+
+/// Main loop: takes a finished download.
+inline void poster_poll() {
+  auto &L = loader();
+  PosterLoader::Result r;
+  uint8_t *px;
+  int w, h;
+  {
+    std::lock_guard<std::mutex> g(L.mu);
+    if (L.res == PosterLoader::NONE) return;
+    r = L.res;
+    px = L.res_px;
+    w = L.res_w;
+    h = L.res_h;
+    const bool current = L.res_gen == L.want_gen;
+    L.res = PosterLoader::NONE;
+    L.res_px = nullptr;
+    if (!current) {
+      free(px);
+      return;
+    }
+  }
+  auto &m = remote_ui::model();
+  if (r == PosterLoader::READY && !m.picture.empty()) {
+    free(L.px);
+    L.px = px;
+    L.w = w;
+    L.h = h;
+    m.poster_loaded = true;
+    remote_ui::request(true);
+    return;
+  }
+  free(px);
+  if (r == PosterLoader::NOT_JPEG && poster() != nullptr && !L.url.empty()) {
+    L.fallback = true;   // online_image decodes other formats
+    poster()->set_url(L.url);
+    poster()->update();
+    return;
+  }
+  m.poster_loaded = false;
+  remote_ui::request();
+}
+
+/// online_image finished (or failed) a fallback download.
+inline void fallback_done(bool ok) {
+  if (!loader().fallback) return;
+  remote_ui::model().poster_loaded = ok && !remote_ui::model().picture.empty();
+  remote_ui::request(ok);
+}
+
+/// The artwork to draw.
+inline remote_ui::GrayImage poster_image() {
+  auto &L = loader();
+  auto *img = poster();
+  if (L.fallback && img != nullptr && img->is_loaded())
+    return {remote_ui::gray_buffer(img), img->get_buffer_width(), img->get_buffer_height()};
+  if (!L.fallback && L.px != nullptr) return {L.px, L.w, L.h};
+  return {};
 }
 
 /// Subscribes to the chosen entities. Call before the API connects (on_boot).
@@ -242,11 +483,13 @@ inline void subscribe(esphome::api::APIServer *api) {
       remote_ui::apply(k, value);
     });
   };
+  // HA forwards in subscription order: the state and the app come first, since
+  // they clear the details (remote_ui::clear_media) that follow them.
   sub(s.player, nullptr, "atv_state");
+  sub(s.player, "app_name", "app");
   sub(s.player, "media_title", "title");
   sub(s.player, "media_series_title", "series");
   sub(s.player, "media_artist", "artist");
-  sub(s.player, "app_name", "app");
   sub(s.player, "media_season", "season");
   sub(s.player, "media_episode", "episode");
   sub(s.player, "media_position", "position");
@@ -395,6 +638,7 @@ inline void handle(const std::string &line) {
 
 /// Reads the serial line; call often (every loop). Restarts after a `set`.
 inline void poll() {
+  poster_poll();
   static std::string buf;
   uint8_t chunk[128];
   for (;;) {

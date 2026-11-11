@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.2.4"
+  firmware_version: "0.3.0"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -58,6 +58,12 @@ substitutions:
   # 3 s, or the USB "calibrate" command) and uses a calibration saved on the
   # device instead of touch_map. Keep "false" in released firmware.
   touch_calibration: "false"
+
+  # Experimental: four grey levels for the artwork (display-grayscale-true.yaml).
+  # Full refreshes use the panel's 4-level waveform; any partial one (a tap, the
+  # minute tick) turns the whole panel back to black and white until the next
+  # full refresh, so the greys come and go.
+  grayscale: "false"
 
   # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (chosen on the
   # Sticky's hotspot or sent over USB). See wifi-builtin.yaml / wifi-setup.yaml.
@@ -181,6 +187,7 @@ logger:
 # captive portal page lets you pick a network. Improv over USB works too.
 packages:
   wifi: !include wifi-${wifi_mode}.yaml
+  grayscale: !include display-grayscale-${grayscale}.yaml
 
 captive_portal:
 
@@ -215,6 +222,18 @@ api:
 ota:
   - platform: esphome
     password: "${ota_password}"
+
+# Settings shown on the Sticky's device page in Home Assistant.
+select:
+  - platform: template
+    id: touch_sound
+    name: "Touch sound"
+    icon: mdi:volume-high
+    entity_category: config
+    options: ["Off", "Quiet", "Normal"]
+    initial_option: "Quiet"
+    optimistic: true
+    restore_value: true
 
 time:
   - platform: homeassistant
@@ -390,16 +409,24 @@ binary_sensor:
 
 # --- Actions sent to Home Assistant -------------------------------------------------------
 script:
+  # The tick on each tap, at the Touch sound setting's level. A hardware timer
+  # ends it, so it stays 25 ms even if the main loop is busy.
   - id: beep
     mode: restart
     then:
-      - output.set_level:
-          id: buzzer
-          level: 50%
-      - delay: 25ms
-      - output.set_level:
-          id: buzzer
-          level: 0%
+      - lambda: |-
+          const size_t level = id(touch_sound).active_index().value_or(1);
+          if (level == 0) return;   // Off
+          static esp_timer_handle_t off = nullptr;
+          if (off == nullptr) {
+            esp_timer_create_args_t args{};
+            args.callback = [](void *) { id(buzzer).set_level(0.0f); };
+            args.name = "beep_off";
+            esp_timer_create(&args, &off);
+          }
+          esp_timer_stop(off);
+          id(buzzer).set_level(level == 1 ? 0.06f : 0.5f);   // Quiet, Normal
+          esp_timer_start_once(off, 25 * 1000);
 
   - id: toggle_light_1
     then:
@@ -500,7 +527,8 @@ interval:
       - lambda: 'sticky::poll();'
 
   # Refresh scheduler: one e-paper update at a time, only when the panel is idle.
-  - interval: 100ms
+  # Checked every 20 ms so a tap's feedback starts as soon as the panel is free.
+  - interval: 20ms
     then:
       - lambda: |-
           remote_ui::feedback_tick();   // clears the pad's pressed look
@@ -554,18 +582,17 @@ http_request:
 image:
   - platform: online_image
     id: poster
-    url: http://127.0.0.1/   # set at runtime from the settings' HA address
+    # Only for artwork that isn't a JPEG: JPEGs load in a background task
+    # (sticky_device.h). Set at runtime from the settings' HA address.
+    url: http://127.0.0.1/
     format: AUTO
     type: GRAYSCALE
+    resize: 440x256      # the poster box (remote_ui::POSTER_W x POSTER_H)
     update_interval: never
     on_download_finished:
-      - lambda: |-
-          remote_ui::model().poster_loaded = true;
-          remote_ui::request(true);
+      - lambda: 'sticky::fallback_done(true);'
     on_error:
-      - lambda: |-
-          remote_ui::model().poster_loaded = false;
-          remote_ui::request();
+      - lambda: 'sticky::fallback_done(false);'
 
 # --- Touch ------------------------------------------------------------------------------------
 touchscreen:
@@ -584,7 +611,7 @@ touchscreen:
           const uint32_t now_ms = millis();
           id(last_activity) = now_ms;
           ESP_LOGD("touch", "x=%d y=%d raw x=%d y=%d", touch.x, touch.y, touch.x_raw, touch.y_raw);
-          if (now_ms - id(last_tap) < 350) return;   // debounce
+          if (now_ms - id(last_tap) < 150) return;   // debounce (quick repeats on the pad still count)
           id(last_tap) = now_ms;
           auto t = id(ha_time).now();
           remote_ui::handle_touch(touch.x_raw, touch.y_raw, touch.x, touch.y, t.is_valid() ? t.timestamp : 0,
@@ -684,6 +711,7 @@ display:
       static const remote_ui::Fonts trmnl{id(r18), id(r20), id(r22), id(r26), id(r30),
                                           id(i24), id(i40), id(i52), id(i64), id(i120)};
       remote_ui::Ctx c{it, sticky::trmnl() ? trmnl : inter};
+      c.gray4 = ${grayscale};
       auto t = id(ha_time).now();
-      remote_ui::render(c, id(poster), t.is_valid() ? t.timestamp : 0, t.is_valid(), t.hour, t.minute,
+      remote_ui::render(c, sticky::poster_image(), t.is_valid() ? t.timestamp : 0, t.is_valid(), t.hour, t.minute,
                         sticky::labels());

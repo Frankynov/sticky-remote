@@ -213,7 +213,9 @@ int sc_frame(int valid, int hour, int minute, int64_t now, uint8_t *pixels) {
   bool full = false;
   if (!remote_ui::take_refresh(remote_ui::model(), full)) return SC_REFRESH_NONE;
   remote_ui::Ctx c{g_display, fonts()};
-  remote_ui::render(c, &g_poster, now, valid, hour, minute, g_labels.view());
+  remote_ui::GrayImage art;
+  if (!g_poster.data.empty()) art = {g_poster.data.data(), g_poster.get_buffer_width(), g_poster.get_buffer_height()};
+  remote_ui::render(c, art, now, valid, hour, minute, g_labels.view());
   if (pixels != nullptr) memcpy(pixels, g_display.px.data(), g_display.px.size());
   return full ? SC_REFRESH_FULL : SC_REFRESH_PARTIAL;
 }

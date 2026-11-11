@@ -113,7 +113,9 @@ inline uint8_t light_icon_index(const std::string &name) {
 }
 // What the Remote page shows as pressed (on-screen feedback for pad and keys).
 enum class Press : uint8_t { NONE, UP, DOWN, LEFT, RIGHT, OK, KEY_BACK, KEY_HOME, KEY_INFUSE, KEY_PLAY };
-constexpr uint32_t PRESS_SHOW_MS = 700;  // feedback clears this long after the last press
+// Feedback clears this long after the last press. Long enough that a quick run of
+// presses moves the highlight instead of waiting behind a refresh that clears it.
+constexpr uint32_t PRESS_SHOW_MS = 1500;
 enum class Page { NOW, REMOTE };
 
 struct Model {
@@ -211,7 +213,37 @@ inline float live_position(const Model &m, int64_t now_epoch) {
 
 // HA sends "None" / "unknown" for attributes that are absent.
 inline std::string clean(const std::string &s) {
-  return (s == "None" || s == "unknown" || s == "unavailable") ? std::string() : s;
+  if (s == "None" || s == "unknown" || s == "unavailable") return std::string();
+  // Characters apps use that the fonts don't have (Infuse writes "S10 ∙ E3").
+  static const char *const MAP[][2] = {
+      {"\u2219", "\u00b7"}, {"\u2022", "\u00b7"}, {"\u22c5", "\u00b7"}, {"\u2027", "\u00b7"},  // dots → ·
+      {"\u2014", "\u2013"}, {"\u2015", "\u2013"}, {"\u2212", "-"},                         // dashes → –, -
+      {"\u2018", "'"}, {"\u2019", "'"}, {"\u201c", "\""}, {"\u201d", "\""}, {"\u00a0", " "},
+      {"\u2502", "|"}, {"\uff5c", "|"}};
+  std::string out = s;
+  for (const auto &m : MAP) {
+    const size_t from_len = strlen(m[0]);
+    for (size_t pos = out.find(m[0]); pos != std::string::npos; pos = out.find(m[0], pos + strlen(m[1])))
+      out.replace(pos, from_len, m[1]);
+  }
+  return out;
+}
+
+// Playback details HA dropped. HA forwards an attribute only when its value
+// changes and never says when one disappears, so the Sticky clears them itself
+// when playback stops or the app changes; whatever the next item carries then
+// differs from "absent" and arrives.
+inline void clear_media(Model &m, bool artwork) {
+  m.title.clear();
+  m.series.clear();
+  m.artist.clear();
+  m.season = m.episode = NAN;
+  if (artwork) {
+    m.position = m.duration = NAN;
+    m.position_at = -1;
+    m.picture.clear();
+    m.poster_loaded = false;
+  }
 }
 
 // --- Redraw queue ---------------------------------------------------------------
@@ -485,6 +517,7 @@ struct Fonts {
 struct Ctx {
   Display &it;
   const Fonts &f;
+  bool gray4 = false;   // the panel shows four grey levels (artwork dithered to them)
   Color ink = esphome::display::COLOR_OFF;
   Color paper = esphome::display::COLOR_ON;
 };
@@ -538,12 +571,17 @@ inline const uint8_t *gray_buffer(esphome::runtime_image::RuntimeImage *img) {
   return static_cast<Access *>(img)->buffer_;
 }
 
-// Draws the artwork centred in the poster box; returns its drawn rectangle so
-// the caller can frame it.
-inline void draw_poster(Ctx &c, esphome::runtime_image::RuntimeImage *img, int &ox, int &oy, int &dw,
-                        int &dh) {
-  const uint8_t *buf = gray_buffer(img);
-  const int sw = img->get_buffer_width(), sh = img->get_buffer_height();
+/// 8-bit grey artwork, wherever it was decoded.
+struct GrayImage {
+  const uint8_t *px = nullptr;
+  int w = 0, h = 0;
+};
+
+// Draws the artwork centred in the poster box, dithered to black and white or
+// to the panel's four greys; returns its drawn rectangle so the caller can frame it.
+inline void draw_poster(Ctx &c, const GrayImage &img, int &ox, int &oy, int &dw, int &dh) {
+  const uint8_t *buf = img.px;
+  const int sw = img.w, sh = img.h;
   dw = dh = 0;
   if (buf == nullptr || sw < 2 || sh < 2) return;
   const float scale = std::min((float) POSTER_W / sw, (float) POSTER_H / sh);
@@ -575,7 +613,16 @@ inline void draw_poster(Ctx &c, esphome::runtime_image::RuntimeImage *img, int &
       const int e_i = x + 2;
       const float v = g + cur[e_i] / 16.0f;
       const bool black = v < 128.0f;
-      c.it.draw_pixel_at(ox + x, oy + y, black ? c.ink : c.paper);
+      if (c.gray4) {
+        // Four greys, layered on the black-and-white dither: a partial refresh
+        // keeps only each pixel's high bit, so the panel then shows exactly the
+        // black-and-white version. The low bit softens it: a black dot in a
+        // mid-tone becomes dark grey, a white one light grey.
+        const uint8_t l8 = black ? (g >= 42.0f ? 85 : 0) : (g >= 212.0f ? 255 : 170);
+        c.it.draw_pixel_at(ox + x, oy + y, Color(l8, l8, l8));
+      } else {
+        c.it.draw_pixel_at(ox + x, oy + y, black ? c.ink : c.paper);
+      }
       const int e = (int) (v - (black ? 0.0f : 255.0f));
       const int fwd = ltr ? 1 : -1;
       cur[e_i + fwd] += e * 7;
@@ -708,10 +755,9 @@ inline std::string subtitle(const Model &m) {
   return s;
 }
 
-inline void draw_playing(Ctx &c, const Model &m, esphome::runtime_image::RuntimeImage *poster,
-                         int64_t now_epoch) {
+inline void draw_playing(Ctx &c, const Model &m, const GrayImage &poster, int64_t now_epoch) {
   int ox = 0, oy = 0, dw = 0, dh = 0;
-  if (m.poster_loaded && poster != nullptr && poster->is_loaded()) draw_poster(c, poster, ox, oy, dw, dh);
+  if (m.poster_loaded && poster.px != nullptr) draw_poster(c, poster, ox, oy, dw, dh);
   if (dw > 0) {
     c.it.rectangle(ox - 1, oy - 1, dw + 2, dh + 2, c.ink);
   } else {
@@ -1048,7 +1094,7 @@ inline void draw_calibrate(Ctx &c) {
   }
 }
 
-inline void draw_screen(Ctx &c, const Model &m, esphome::runtime_image::RuntimeImage *poster,
+inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
                         int64_t now_epoch, bool time_valid, int hour, int minute, const char *room,
                         const char *name1, const char *name2, const char *infuse_label,
                         const char *player = "Apple TV") {
@@ -1083,7 +1129,7 @@ struct Labels {
 
 // The display lambda: draws the screen and records what it showed, so the
 // minute tick knows when the clock or seek bar needs a redraw.
-inline void render(Ctx &c, esphome::runtime_image::RuntimeImage *poster, int64_t now_epoch, bool time_valid,
+inline void render(Ctx &c, const GrayImage &poster, int64_t now_epoch, bool time_valid,
                    int hour, int minute, const Labels &l) {
   const auto &m = model();
   draw_screen(c, m, poster, now_epoch, time_valid, hour, minute, l.room, l.light_1, l.light_2, l.infuse,
@@ -1211,6 +1257,7 @@ inline void set_atv_state(const std::string &state) {
   const Mode before = m.mode();
   m.atv_state = state;
   const Mode after = m.mode();
+  if (after != Mode::PLAYING && before == Mode::PLAYING) clear_media(m, true);
   if (!m.state_seen || before != after) {
     if (after == Mode::PLAYING) m.page = Page::NOW;
     else if (after == Mode::IDLE) m.page = Page::REMOTE;
@@ -1275,7 +1322,11 @@ inline void apply(const std::string &key, const std::string &v) {
   if (key == "title") m.title = clean(v);
   else if (key == "series") m.series = clean(v);
   else if (key == "artist") m.artist = clean(v);
-  else if (key == "app") m.app = clean(v);
+  else if (key == "app") {
+    const std::string app = clean(v);
+    if (app != m.app) clear_media(m, false);   // the new app's details follow (subscribed after the app)
+    m.app = app;
+  }
   else if (key == "season") m.season = to_float(v);
   else if (key == "episode") m.episode = to_float(v);
   else if (key == "position") m.position = to_float(v);

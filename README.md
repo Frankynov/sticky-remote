@@ -40,6 +40,11 @@ page runs the whole wizard without a Sticky or a Home Assistant.
   the screen changes between playing, idle and off, when new artwork arrives,
   and every 20 partials.
 - **Battery**: deep sleep after 3 minutes on battery; any button wakes it.
+- **Touch sound**: Off, Quiet (default) or Normal, from the Sticky's device
+  page in Home Assistant (a `select` entity, kept across restarts).
+- **Artwork** loads in a background task: download (HTTPS with certificate
+  checks) and JPEG decode at 1/2, 1/4 or 1/8 scale never hold up touch or the
+  screen. Other formats fall back to ESPHome's `online_image`.
 
 ## Privacy
 
@@ -162,6 +167,15 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 5. **Artwork**: a poster shows up when something plays.
 
 ## Notes
+
+- **Four greys (experimental)**: `-s grayscale true` builds for the panel's
+  4-level mode. Full refreshes show the artwork in four greys; any partial
+  refresh (a tap, the minute tick) turns the whole panel back to black and
+  white until the next full one. The greys are layered on the black-and-white
+  dither, so that state looks exactly like the default build.
+- **Media details**: HA sends an attribute only when it changes and never
+  says when one disappears, so the Sticky clears title, artist and series
+  itself when playback stops or the app changes.
 
 - Waking takes a few seconds while Wi-Fi and the HA connection come back. A
   static IP (`manual_ip:` under `wifi:`) shortens it.
