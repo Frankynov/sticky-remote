@@ -14,15 +14,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 HERE = Path(__file__).resolve().parent
-FONTS = HERE.parent / "fonts"
+FONTS = HERE.parent / "firmware" / "fonts"
 W, H = 480, 800
 INK, PAPER = 0, 1
 
 # --- Layout (keep in sync with remote_ui.h) --------------------------------
 M = 14                       # outer margin
 STATUS_H = 36                # status bar
-TILE_Y, TILE_H, TILE_W, TILE_GAP = 44, 128, 140, 16
-TAB_Y, TAB_H = 184, 40              # "Now playing | Remote" switch
+TILE_Y, TILE_H, TILE_W, TILE_GAP = 42, 124, 140, 16
+TAB_Y, TAB_H = 174, 54              # "Now playing | Remote" switch
 POSTER_Y, POSTER_H = 238, 256        # 2:3 poster -> ~170 wide
 TITLE_Y = 506                         # title text top
 SUB_Y = 544
@@ -106,9 +106,9 @@ def tile(d, x, label, icon, state, on):
         d.rounded_rectangle(box, r, fill=PAPER, outline=INK, width=3)
     fg = PAPER if on else INK
     cx = x + TILE_W // 2
-    text(d, (cx, TILE_Y + 42), icon, I[52], fg)
-    text(d, (cx, TILE_Y + 88), label, F[22], fg)
-    text(d, (cx, TILE_Y + 110), state, F[18], fg)
+    text(d, (cx, TILE_Y + 38), icon, I[52], fg)
+    text(d, (cx, TILE_Y + 80), label, F[22], fg)
+    text(d, (cx, TILE_Y + 105), state, F[18], fg)
 
 
 def status_bar(d, clock="21:47", battery=78):
@@ -156,20 +156,16 @@ def fmt(sec):
 
 
 def tabs(d, active):
-    """Outlined pill; the active half is filled inside the outline."""
-    x0, x1, h, t = M, W - M, TAB_H, 3
-    mid = W // 2
-    d.rounded_rectangle([x0, TAB_Y, x1 - 1, TAB_Y + h - 1], h // 2, outline=INK, width=t)
-    ih, r = h - 2 * t, (h - 2 * t) // 2
-    y0 = TAB_Y + t
-    if active == 0:   # half pill: round on the left, square at the middle
-        d.ellipse([x0 + t, y0, x0 + t + ih - 1, y0 + ih - 1], fill=INK)
-        d.rectangle([x0 + t + r, y0, mid, y0 + ih - 1], fill=INK)
-    else:
-        d.ellipse([x1 - t - ih, y0, x1 - t - 1, y0 + ih - 1], fill=INK)
-        d.rectangle([mid, y0, x1 - t - r, y0 + ih - 1], fill=INK)
-    text(d, ((x0 + mid) // 2, TAB_Y + h // 2), "Now playing", F[20], PAPER if active == 0 else INK)
-    text(d, ((mid + x1) // 2, TAB_Y + h // 2), "Remote", F[20], PAPER if active == 1 else INK)
+    """Outlined track; the selected page is a pill of its own inside it."""
+    x0, x1, t, mid = M, W - M, 3, W // 2
+    inset = t + 3
+    d.rounded_rectangle([x0, TAB_Y, x1 - 1, TAB_Y + TAB_H - 1], TAB_H // 2, outline=INK, width=t)
+    ph, py = TAB_H - 2 * inset, TAB_Y + inset
+    px0, px1 = (x0 + inset, mid - 2) if active == 0 else (mid + 2, x1 - inset)
+    d.rounded_rectangle([px0, py, px1 - 1, py + ph - 1], ph // 2, fill=INK)
+    cy = TAB_Y + TAB_H // 2
+    text(d, ((x0 + mid) // 2, cy), "Now playing", F[22], PAPER if active == 0 else INK)
+    text(d, ((mid + x1) // 2, cy), "Remote", F[22], PAPER if active == 1 else INK)
 
 
 def remote(d, playing_now=True):

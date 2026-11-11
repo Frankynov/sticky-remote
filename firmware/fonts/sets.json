@@ -10,7 +10,7 @@
   "trmnl": {
     "label": "TRMNL (e-paper pixel fonts)",
     "fonts": {
-      "t18": ["trmnl/TRMNL21-Regular.ttf", 21], "t20": ["trmnl/TRMNL21-Regular.ttf", 21],
+      "t18": ["trmnl/TRMNL21-Bold.ttf", 21], "t20": ["trmnl/TRMNL21-Bold.ttf", 21],
       "t22": ["trmnl/TRMNL21-Bold.ttf", 21], "t26": ["trmnl/TRMNL12-Bold.ttf", 24],
       "t30": ["trmnl/TRMNL16-Bold.ttf", 32]
     }

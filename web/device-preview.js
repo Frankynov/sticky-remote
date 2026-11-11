@@ -8,7 +8,7 @@
 // for pixel against the firmware's own render (web/check_preview.py).
 
 const W = 480, H = 800, M = 14, STATUS_H = 36;
-const TILE_Y = 44, TILE_H = 128, TILE_GAP = 16;
+const TILE_Y = 42, TILE_H = 124, TILE_GAP = 16;
 const KEY_Y = 580, KEY_H = 72, KEY_W = 104, KEY_GAP = 12;
 const ROLES = ["t18", "t20", "t22", "t26", "t30", "i24", "i40", "i52", "i64", "i120"];
 const ICON = {
@@ -170,9 +170,9 @@ function drawTile(s, f, i, n, label, icon, state, on) {
   const x = tileX(i, n), w = tileW(n), r = 14;
   if (on) s.rrect(x, TILE_Y, w, TILE_H, r, INK); else s.strokeRrect(x, TILE_Y, w, TILE_H, r, 3);
   const fg = on ? PAPER : INK, cx = x + idiv(w, 2);
-  s.print(cx, TILE_Y + 42, f.i52, fg, ["center", "center"], glyph(icon));
-  s.printFit(cx, TILE_Y + 88, f.t22, fg, ["center", "center"], label, w - 12);
-  s.print(cx, TILE_Y + 110, f.t18, fg, ["center", "center"], state);
+  s.print(cx, TILE_Y + 38, f.i52, fg, ["center", "center"], glyph(icon));
+  s.printFit(cx, TILE_Y + 80, f.t22, fg, ["center", "center"], label, w - 12);
+  s.print(cx, TILE_Y + 105, f.t18, fg, ["center", "center"], state);
 }
 
 function lightState(l) {

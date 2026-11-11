@@ -647,12 +647,12 @@ font:
     glyphsets: [GF_Latin_Core]
     glyphs: ["…·–"]
   # TRMNL (e-paper pixel fonts)
-  - file: fonts/trmnl/TRMNL21-Regular.ttf
+  - file: fonts/trmnl/TRMNL21-Bold.ttf
     id: r18
     size: 21
     glyphsets: [GF_Latin_Core]
     glyphs: ["…·–"]
-  - file: fonts/trmnl/TRMNL21-Regular.ttf
+  - file: fonts/trmnl/TRMNL21-Bold.ttf
     id: r20
     size: 21
     glyphsets: [GF_Latin_Core]

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "previews"
 OUT.mkdir(parents=True, exist_ok=True)
 TMP = ROOT / "engine" / "build"
-TOP = 180   # rows the page draws itself: status bar and tiles (TILE_Y + TILE_H + 8)
+TOP = 170   # rows the page draws itself: status bar and tiles (TILE_Y + TILE_H + 4; the tabs start at 174)
 
 
 def engine(font_set):
@@ -60,7 +60,7 @@ for c in common + ["atv_state playing", "app Infuse", "title The Long Night", "p
     cmd("set " + c)
 cmd(f"poster {raw} {poster.width} {poster.height}")
 frame(cmd, "welcome-now")
-cmd("tap 352 204 1793000000")               # Remote tab
+cmd("tap 352 201 1793000000")               # Remote tab
 frame(cmd, "welcome-remote")
 p.kill()
 

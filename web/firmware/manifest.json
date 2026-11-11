@@ -3,7 +3,7 @@
   "version": "0.3.0",
   "chip": "ESP32-S3",
   "file": "sticky-remote-0.3.0.factory.bin",
-  "size": 1420064,
-  "sha256": "997d4b449dbe0410656a4469ef22957173c8e5f3829aceb9ae3ac5cc62378db1",
-  "built": "2026-11-11T22:50:21Z"
+  "size": 1420912,
+  "sha256": "bb0c6a9d780e6505d326574f69ccdce8b5f09cc929e4b995dc75f6353018d448",
+  "built": "2026-11-11T23:02:51Z"
 }

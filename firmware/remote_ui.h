@@ -35,8 +35,8 @@ using esphome::display::TextAlign;
 constexpr int W = 480, H = 800;
 constexpr int M = 14;
 constexpr int STATUS_H = 36;
-constexpr int TILE_Y = 44, TILE_H = 128, TILE_W = 140, TILE_GAP = 16;
-constexpr int TAB_Y = 184, TAB_H = 40;                               // "Now playing | Remote"
+constexpr int TILE_Y = 42, TILE_H = 124, TILE_W = 140, TILE_GAP = 16;
+constexpr int TAB_Y = 174, TAB_H = 54;                               // "Now playing | Remote"
 constexpr int POSTER_Y = 238, POSTER_H = 256, POSTER_W = W - 2 * 20;  // contain-fit box
 constexpr int TITLE_Y = 506, SUB_Y = 544;
 constexpr int SEEK_Y = 582, SEEK_H = 14, TIME_Y = 602;
@@ -668,9 +668,9 @@ inline void draw_tile(Ctx &c, int i, int n, const char *label, const char *icon,
   }
   const Color fg = on ? c.paper : c.ink;
   const int cx = x + w / 2;
-  c.it.print(cx, TILE_Y + 42, c.f.i52, fg, TextAlign::CENTER, icon);
-  print_fit(c, cx, TILE_Y + 88, c.f.t22, fg, TextAlign::CENTER, label, w - 12);
-  c.it.print(cx, TILE_Y + 110, c.f.t18, fg, TextAlign::CENTER, known ? state : "…");
+  c.it.print(cx, TILE_Y + 38, c.f.i52, fg, TextAlign::CENTER, icon);
+  print_fit(c, cx, TILE_Y + 80, c.f.t22, fg, TextAlign::CENTER, label, w - 12);
+  c.it.print(cx, TILE_Y + 105, c.f.t18, fg, TextAlign::CENTER, known ? state : "…");
 }
 
 inline const char *light_icon(uint8_t kind, bool on) {
@@ -823,25 +823,16 @@ inline void draw_off(Ctx &c) {
 
 // Outlined pill; the active half is filled inside the outline.
 inline void draw_tabs(Ctx &c, Page active) {
-  const int x0 = M, x1 = W - M, h = TAB_H, t = 3, mid = W / 2;
-  stroke_rrect(c, x0, TAB_Y, x1 - x0, h, h / 2, t);
-  // Same inner pill as stroke_rrect, so the ends line up pixel for pixel:
-  // fill it all, paint the inactive half back to paper (round outer end),
-  // then square off the active half at the middle.
-  const int ix0 = x0 + t, ix1 = x1 - t, ih = h - 2 * t, r = h / 2 - t, y0 = TAB_Y + t;
-  fill_rrect(c, ix0, y0, ix1 - ix0, ih, r, c.ink);
-  if (active == Page::NOW) {
-    fill_rrect(c, mid - r, y0, ix1 - (mid - r), ih, r, c.paper);
-    c.it.filled_rectangle(mid - r, y0, r, ih, c.ink);
-  } else {
-    fill_rrect(c, ix0, y0, mid + r - ix0, ih, r, c.paper);
-    c.it.filled_rectangle(mid, y0, r, ih, c.ink);
-  }
-  const int cy = TAB_Y + h / 2;
-  c.it.print((x0 + mid) / 2, cy, c.f.t20, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER,
-             "Now playing");
-  c.it.print((mid + x1) / 2, cy, c.f.t20, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER,
-             "Remote");
+  // An outlined track; the selected page is a pill of its own inside it.
+  const int x0 = M, x1 = W - M, mid = W / 2, t = 3, inset = t + 3;
+  stroke_rrect(c, x0, TAB_Y, x1 - x0, TAB_H, TAB_H / 2, t);
+  const int ph = TAB_H - 2 * inset, py = TAB_Y + inset;
+  const int px0 = active == Page::NOW ? x0 + inset : mid + 2;
+  const int px1 = active == Page::NOW ? mid - 2 : x1 - inset;
+  fill_rrect(c, px0, py, px1 - px0, ph, ph / 2, c.ink);
+  const int cy = TAB_Y + TAB_H / 2;
+  c.it.print((x0 + mid) / 2, cy, c.f.t22, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER, "Now playing");
+  c.it.print((mid + x1) / 2, cy, c.f.t22, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER, "Remote");
 }
 
 inline int key_x(int i) { return M + i * (KEY_W + KEY_GAP); }
@@ -1001,8 +992,8 @@ inline void draw_setup_ha(Ctx &c, const Model &m) {
   int y = 290;
   y = draw_step(c, y, 1, "In Home Assistant, open Settings, then Devices & services.");
   y = draw_step(c, y, 2, "Under Discovered, configure “" + m.device_name + "” (ESPHome).");
-  y = draw_step(c, y, 3, "Enter its encryption key. Sticky Simulator shows it after flashing.");
-  y = draw_step(c, y, 4, "In the device's options, allow it to perform Home Assistant actions.");
+  // No key to enter: Home Assistant creates the encryption key when it adds the Sticky.
+  y = draw_step(c, y, 3, "In the device's options, allow it to perform Home Assistant actions.");
   print_wrapped(c, M + 6, std::max(y + 10, 690), c.f.t18, c.ink, "This screen goes away once Home Assistant connects.", W - 2 * M - 12, 24);
 }
 
@@ -1196,7 +1187,7 @@ inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_t
   if (m.in_setup()) return NONE;
   const int n = tile_count(m.light_count);
   for (int i = 0; i < n; i++)
-    if (in(x, y, tile_x(i, n) - TILE_GAP / 2, TILE_Y - 6, tile_w(n) + TILE_GAP, TILE_H + 12))
+    if (in(x, y, tile_x(i, n) - TILE_GAP / 2, TILE_Y - 6, tile_w(n) + TILE_GAP, TILE_H + 10))   // down to the tabs
       return i == n - 1 ? ATV_POWER : (Action) (LIGHT_1 + i);
 
   const Mode mode = m.mode();
@@ -1205,7 +1196,7 @@ inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_t
     if (x > W - M - VOL_BTN_W - 20) return VOL_UP;
     return NONE;
   }
-  if (mode != Mode::OFF && in(x, y, 0, TAB_Y - 6, W, TAB_H + 12))
+  if (mode != Mode::OFF && in(x, y, 0, TAB_Y - 4, W, TAB_H + 12))   // the whole strip, to the poster
     return x < W / 2 ? TAB_NOW : TAB_REMOTE;
 
   if (mode != Mode::OFF && m.page == Page::REMOTE) {
