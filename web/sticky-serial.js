@@ -90,6 +90,9 @@ export class StickySerial {
     return null;
   }
 
+  /** Starts a Wi-Fi scan (firmware 0.4+; older ones answer with an error, ignored). The list comes with info(). */
+  async scan() { try { await this.send({ sticky: "setup", cmd: "scan" }); } catch {} }
+
   /** Saves settings and/or Wi-Fi; resolves once the board confirmed (it then restarts). */
   async set({ settings, wifi }) {
     const cmd = { sticky: "setup", cmd: "set" };
@@ -153,7 +156,8 @@ export class DemoSticky {
       this.state.ha = { connected: true, paired: true };
       this.state.settings = { player: "media_player.salon", remote: "remote.salon", player_name: "Apple TV", app: "Infuse",
         app_label: "Open Infuse", light1: "light.floor_lamp", light1_name: "Floor lamp", light1_icon: "floor",
-        light2: "light.ceiling", light2_name: "Ceiling", light2_icon: "ceiling", room: "Salon", ha_url: "", font_set: "inter" };
+        light2: "light.ceiling", light2_name: "Ceiling", light2_icon: "ceiling", room: "Salon", ha_url: "", font_set: "inter",
+        touch_sound: "quiet" };
     }
   }
   /** Demo: after "flashing", the new version runs; erasing loses everything. */
@@ -165,6 +169,8 @@ export class DemoSticky {
   }
   async open() {}
   async close() {}
+  /** Demo: the list fills in a few seconds after the first scan, as on the device. */
+  async scan() { this.scanned ??= Date.now(); }
   async info() {
     await sleep(400);
     if (!this.state.fw) return null;
@@ -174,14 +180,21 @@ export class DemoSticky {
       wifi: s.wifi ? { connected: true, hotspot: false, ip: "192.168.1.57", ssid: s.wifi.ssid }
                    : { connected: false, hotspot: true, ip: "" },
       ha: s.ha, configured: !!(s.settings.player || s.settings.light1), settings: s.settings,
-      networks: [{ ssid: "Maison", rssi: -48, secure: true }, { ssid: "Maison-IoT", rssi: -61, secure: true },
-                 { ssid: "Voisins", rssi: -82, secure: true }],
+      caps: ["scan", "touch_sound"],
+      networks: this.scanned && Date.now() - this.scanned > 2500
+        ? [{ ssid: "Maison", rssi: -48, secure: true }, { ssid: "Maison-IoT", rssi: -61, secure: true },
+           { ssid: "Maison", rssi: -70, secure: true }, { ssid: "Cafe du coin", rssi: -77, secure: false },
+           { ssid: "Voisins", rssi: -82, secure: true }]
+        : [],
     };
   }
   async set({ settings, wifi }) {
     await sleep(500);
     if (settings) this.state.settings = { ...settings };
-    if (wifi) this.state.wifi = wifi;
+    if (wifi) {   // demo: any password works except "wrong"
+      this.state.wifi = wifi.pass === "wrong" ? null : wifi;
+      if (this.state.ha.paired) { this.state.ha.connected = false; setTimeout(() => { this.state.ha.connected = true; }, 6000); }
+    }
     return { ok: true, saved: true, restarting: true };
   }
   async waitForBoard() { await sleep(2500); return this.info(); }

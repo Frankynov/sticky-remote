@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""1-bit mockup of the Sticky remote UI (480x800 portrait).
+"""NOTE: kept for history. These hand-drawn mockups no longer match the firmware
+(since 0.4.0); design/render_screens.py renders the real screens.
+
+1-bit mockup of the Sticky remote UI (480x800 portrait).
 
 Renders exactly what the panel can show: black or white pixels, no
 anti-aliasing, the same Inter Bold + Material Design Icons fonts the ESPHome

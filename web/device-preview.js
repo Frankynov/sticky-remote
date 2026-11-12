@@ -9,7 +9,7 @@
 
 const W = 480, H = 800, M = 14, STATUS_H = 36;
 const TILE_Y = 42, TILE_H = 124, TILE_GAP = 16;
-const KEY_Y = 580, KEY_H = 72, KEY_W = 104, KEY_GAP = 12;
+const KEY_Y = 550, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
 const ROLES = ["t18", "t20", "t22", "t26", "t30", "i24", "i40", "i52", "i64", "i120"];
 const ICON = {
   bulb_on: 0xf0335, bulb_off: 0xf0336, ceiling_on: 0xf0769, ceiling_off: 0xf17c7,
@@ -92,14 +92,17 @@ class Screen {
     } while (dx <= 0);
   }
   rrect(x, y, w, h, r, c) {
-    r = Math.min(r, idiv(Math.min(w, h), 2));
-    this.rect(x + r, y, w - 2 * r, h, c);
-    this.rect(x, y + r, r, h - 2 * r, c);
-    this.rect(x + w - r, y + r, r, h - 2 * r, c);
-    this.circle(x + r, y + r, r, c);
-    this.circle(x + w - r - 1, y + r, r, c);
-    this.circle(x + r, y + h - r - 1, r, c);
-    this.circle(x + w - r - 1, y + h - r - 1, r, c);
+    // remote_ui::fill_rrect: row by row, a corner pixel is in when its centre
+    // is inside the corner's circle (integer maths, in half pixels).
+    r = Math.max(0, Math.min(r, idiv(Math.min(w, h), 2)));
+    for (let j = 0; j < r; j++) {
+      const dy = 2 * (r - j) - 1;
+      let inset = 0;
+      while (inset < r && (2 * (r - inset) - 1) ** 2 + dy * dy > 4 * r * r) inset++;
+      this.rect(x + inset, y + j, w - 2 * inset, 1, c);
+      this.rect(x + inset, y + h - 1 - j, w - 2 * inset, 1, c);
+    }
+    this.rect(x, y + r, w, h - 2 * r, c);
   }
   strokeRrect(x, y, w, h, r, t) {
     this.rrect(x, y, w, h, r, INK);
@@ -199,6 +202,19 @@ export async function renderRemote(canvas, d) {
   s.printFit(kx + idiv(KEY_W, 2), KEY_Y + 54, fonts.t18, INK, ["center", "center"], d.app || "App", KEY_W - 8);
   paint(canvas, s.px);
   return s.px;
+}
+
+/** Draws one of the firmware's light icons (lit version) into a small canvas, in `color`. */
+export async function drawIcon(canvas, kind, color) {
+  const f = (await loadFonts("inter")).i52;
+  const g = f.glyphs.get(ICON[`${kind}_on`]);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!g) return;
+  ctx.fillStyle = color;
+  const ox = idiv(canvas.width - g.w, 2), oy = idiv(canvas.height - g.h, 2);
+  for (let j = 0; j < g.h; j++) for (let i = 0; i < g.w; i++)
+    if (g.bits[j * g.w + i]) ctx.fillRect(ox + i, oy + j, 1, 1);
 }
 
 /** Shows a fixed screen (welcome page). */

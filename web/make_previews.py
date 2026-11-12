@@ -59,8 +59,9 @@ for c in common + ["atv_state playing", "app Infuse", "title The Long Night", "p
                    "duration 8040", "position_at 2026-10-26T18:00:00+00:00", "picture night"]:
     cmd("set " + c)
 cmd(f"poster {raw} {poster.width} {poster.height}")
+cmd("tap 352 201 1793000000")               # Now playing tab (the Sticky starts on Remote)
 frame(cmd, "welcome-now")
-cmd("tap 352 201 1793000000")               # Remote tab
+cmd("tap 120 201 1793000000")               # Remote tab
 frame(cmd, "welcome-remote")
 p.kill()
 

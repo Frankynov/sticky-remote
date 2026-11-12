@@ -5,7 +5,7 @@ e-paper, touch) into a remote for an Apple TV and one or two lights, through
 **ESPHome** and **Home Assistant**. A web wizard flashes it and sets it up from
 the browser, with no tools to install.
 
-![screens](design/mockup-sheet.png)
+![screens](design/screens.png)
 
 **Set one up:** open <https://frankynov.ovh/sticky/> in Chrome or Edge on a
 computer, plug the Sticky in over USB-C and follow the steps. `?demo` on that
@@ -19,10 +19,11 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 | Area | What it does | Home Assistant |
 |---|---|---|
 | Top tiles | One or two lights (toggle, brightness) and the player's power | `light.toggle`, `media_player.turn_on/off` |
-| Tabs | "Now playing" and "Remote". Playback starting switches to Now playing; going back to the menus switches to Remote | — |
+| Tabs | "Remote", the everyday page, and "Now playing". Starting a film doesn't switch pages | — |
 | Remote pad | ↑ ↓ ← → and OK, with on-screen feedback | `remote.send_command` up/down/left/right/select |
 | Remote keys | Back, Home, the app button (e.g. Infuse), Play/Pause | `remote.send_command` menu/home, `select_source`, `media_play_pause` |
-| Now playing | Artwork (dithered), title, series/episode or artist, app | `media_player` attributes |
+| Playing strip | On the Remote page: −10 s, the title and position, +10 s. Tap the title for Now playing | `media_seek` |
+| Now playing | Artwork (dithered; posters and wide stills both fit), title, series/episode or artist, app | `media_player` attributes |
 | Seek bar | Playing/Paused and the position; tap anywhere to jump there | `media_player.media_seek` |
 | Transport | −10 s, play/pause, +10 s | `media_seek`, `media_play_pause` |
 | Idle / off | "Open Infuse" / "Turn on" | `select_source`, `turn_on` |
@@ -40,11 +41,20 @@ page runs the whole wizard without a Sticky or a Home Assistant.
   the screen changes between playing, idle and off, when new artwork arrives,
   and every 20 partials.
 - **Battery**: deep sleep after 3 minutes on battery; any button wakes it.
-- **Touch sound**: Off, Quiet (default) or Normal, from the Sticky's device
-  page in Home Assistant (a `select` entity, kept across restarts).
+- **Touch sound**: Off, Quiet (default) or Normal, from the setup page or the
+  Sticky's device page in Home Assistant (a `select` under Configuration).
 - **Artwork** loads in a background task: download (HTTPS with certificate
   checks) and JPEG decode at 1/2, 1/4 or 1/8 scale never hold up touch or the
   screen. Other formats fall back to ESPHome's `online_image`.
+
+## The setup page
+
+- **First time**: Connect, Install, Wi-Fi (networks the Sticky sees; the page
+  checks that it joins before moving on), Home Assistant, Your remote (with a
+  live picture of the result), Send, Add to Home Assistant, Test.
+- **A Sticky that's already set up** gets a short menu instead: update it,
+  change what it controls, move it to another Wi-Fi, or start from scratch.
+  Each runs only the steps it needs and keeps everything else.
 
 ## Privacy
 
@@ -141,12 +151,17 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 - `{"sticky":"setup","cmd":"set","settings":{…},"wifi":{"ssid":"…","pass":"…"}}`
   saves either part and restarts: `{"ok":true,"saved":true,"restarting":true}`.
 - `{"sticky":"setup","cmd":"reset"}` clears the settings.
+- `{"sticky":"setup","cmd":"scan"}` starts a Wi-Fi scan; the networks come
+  with the next `get`, a few seconds later.
+- The info line's `caps` lists what the firmware supports beyond the first
+  protocol (`scan`, `touch_sound`); the setup page hides what's missing.
 - Development builds (`touch_calibration: "true"`) add
   `{"sticky":"setup","cmd":"calibrate"}` and `{"sticky":"setup","cmd":"touch_reset"}`.
   The info line's `touch` object gives the map in use and its source.
 - Setting fields: `player remote player_name app app_label light1 light1_name
   light1_icon light2 light2_name light2_icon room ha_url font_set`. Icons are
   `bulb`, `ceiling`, `floor` or `star`; `font_set` is `inter` or `trmnl`.
+  `touch_sound` (`off`, `quiet`, `normal`) is accepted in `settings` too.
 - Send at most 64 bytes every ~10 ms: the receive buffer is small.
 
 ## What to check on a real device

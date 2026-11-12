@@ -14,15 +14,28 @@ body { margin: 0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", 
        background: var(--bg); color: var(--ink); }
 a { color: var(--accent); }
 
-.top { display: flex; gap: 16px; align-items: center; padding: 20px 28px; border-bottom: 1px solid var(--line); }
+/* One centred column, as wide as the window allows up to --page. */
+:root { --page: 1280px; --pad: clamp(14px, 3vw, 36px); }
+.top { border-bottom: 1px solid var(--line); }
+.top-in { display: flex; gap: 16px; align-items: center; padding: 18px var(--pad); max-width: var(--page); margin: 0 auto; }
 .top .logo { width: 52px; height: 52px; border-radius: 12px; }
 .top h1 { margin: 0; font-size: 21px; }
 .top p { margin: 2px 0 0; color: var(--mute); }
-.top > div { flex: 1; min-width: 220px; }
+.top-in > div { flex: 1; min-width: 220px; }
 .demo-badge { margin-left: auto; background: var(--warn); color: #fff; padding: 4px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; }
 
-.layout { display: grid; grid-template-columns: 240px minmax(0, 760px); gap: 28px; padding: 28px; max-width: 1100px; }
-@media (max-width: 820px) { .layout { grid-template-columns: 1fr; } .steps { display: none; } }
+.layout { display: grid; grid-template-columns: clamp(200px, 18vw, 260px) minmax(0, 1fr); gap: clamp(16px, 2.4vw, 36px);
+          padding: clamp(14px, 2.4vw, 32px) var(--pad); max-width: var(--page); margin: 0 auto; align-items: start; }
+.steps { position: sticky; top: 16px; }
+.content { min-width: 0; }
+/* Narrow windows: the step list becomes one line with a progress bar. */
+.step-bar { display: none; position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: 9px 14px 12px; margin-bottom: 12px; gap: 10px; align-items: baseline; overflow: hidden; }
+.step-bar span { color: var(--mute); font-size: 13px; }
+.step-bar i { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width .25s; }
+@media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .steps { display: none; } .step-bar { display: flex; } }
+/* Text stays readable when the card is wide. */
+main > p, main > ul, main > ol, main .lead { max-width: 72ch; }
 
 .steps ol { list-style: none; margin: 0; padding: 0; counter-reset: step; }
 .steps li { counter-increment: step; display: flex; align-items: center; gap: 10px; padding: 8px 10px;
@@ -39,7 +52,8 @@ a { color: var(--accent); }
 .privacy-list { padding-left: 20px; color: var(--mute); }
 .privacy-list b { color: var(--ink); }
 
-main { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px 32px; min-height: 420px; }
+main { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+       padding: clamp(18px, 2.6vw, 36px) clamp(16px, 3vw, 40px); min-height: 420px; }
 main h2 { margin: 0 0 6px; font-size: 23px; }
 main .lead { color: var(--mute); margin: 0 0 22px; }
 main h3 { font-size: 16px; margin: 24px 0 8px; }
@@ -81,9 +95,54 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .log { font: 12px/1.45 ui-monospace, Menlo, monospace; background: var(--bg); border-radius: 8px; padding: 10px;
        max-height: 160px; overflow: auto; white-space: pre-wrap; color: var(--mute); margin-top: 10px; }
 
-.networks { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
-.networks button { padding: 6px 12px; font-size: 14px; }
-.networks button.chosen { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* Wi-Fi networks the Sticky sees */
+.net-head { display: flex; align-items: baseline; gap: 12px; margin-top: 18px; }
+.net-head .link { margin-left: auto; }
+.networks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin: 8px 0 14px; min-height: 44px; }
+.networks button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; }
+.networks button span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.networks button small { color: var(--mute); }
+.networks button.chosen { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
+.networks .hint { color: var(--mute); grid-column: 1 / -1; align-self: center; }
+.networks .hint.wait::before { content: "◌"; color: var(--accent); display: inline-block; margin-right: 8px; animation: spin 1s linear infinite; }
+.bars { width: 16px; height: 14px; flex: none; background:
+  linear-gradient(var(--ink), var(--ink)) 0 100% / 4px 5px no-repeat,
+  linear-gradient(var(--b2, var(--line)), var(--b2, var(--line))) 6px 100% / 4px 9px no-repeat,
+  linear-gradient(var(--b3, var(--line)), var(--b3, var(--line))) 12px 100% / 4px 14px no-repeat; }
+.bars.b2 { --b2: var(--ink); } .bars.b3 { --b2: var(--ink); --b3: var(--ink); }
+
+/* A set-up Sticky: what it is, and what to do with it */
+.found { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; background: var(--bg); border-radius: 10px; padding: 14px 16px; }
+.found b { font-size: 17px; margin-right: 4px; }
+.found span { font-size: 13px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--line); color: var(--mute); }
+.found span.good { color: var(--ok); border-color: currentColor; }
+.found span.off { color: var(--warn); border-color: currentColor; }
+.found small { flex-basis: 100%; color: var(--mute); word-break: break-all; }
+.choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.choice { text-align: left; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+.choice b { font-size: 16px; }
+.choice small { color: var(--mute); }
+.choice:hover { border-color: var(--accent); }
+.choice.recommended { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.choice.quiet b { font-weight: 500; }
+
+/* Your remote: short cards, segmented choices */
+.cards { display: grid; gap: 14px; min-width: 0; }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 4px 18px 10px; }
+.card h3 { margin: 14px 0 2px; }
+.card .field small { word-break: break-all; }
+div.field { margin: 12px 0; }
+div.field > span { display: block; font-weight: 600; margin-bottom: 5px; }
+.seg { display: inline-flex; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; max-width: 100%; }
+.seg button { border: none; background: none; padding: 6px 14px; border-radius: 7px; color: var(--mute); }
+.seg button.on { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+.seg.icons button { padding: 3px 6px; line-height: 0; opacity: .5; }
+.seg.icons button.on { opacity: 1; }
+.seg.icons canvas { width: 34px; height: 34px; }
+.light + .light { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 2px; }
+.light-opts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: end; }
+@media (max-width: 520px) { .light-opts { grid-template-columns: 1fr; } }
+details { margin-top: 2px; } summary { cursor: pointer; color: var(--mute); padding: 6px 2px; }
 
 /* The Sticky, drawn as the firmware draws it (device-preview.js) */
 .device { background: #29292c; border-radius: 22px; padding: 14px 11px 18px; display: inline-block;
@@ -91,9 +150,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .device canvas { display: block; width: 100%; height: auto; border-radius: 3px; }
 .hero { display: flex; gap: 22px; justify-content: center; margin: -4px 0 18px; }
 .hero figure { margin: 0; text-align: center; }
-.hero .device { width: 170px; }
+.hero .device { width: clamp(150px, 16vw, 210px); }
 .hero figcaption { color: var(--mute); font-size: 13px; margin-top: 8px; }
-.with-device { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 26px; align-items: start; }
+.with-device { display: grid; grid-template-columns: minmax(0, 1fr) clamp(220px, 24vw, 300px); gap: clamp(18px, 2.6vw, 40px); align-items: start; }
 .device-col { position: sticky; top: 16px; text-align: center; }
 .device-col .device { width: 100%; }
 .device-note { color: var(--mute); font-size: 12px; margin: 8px 0 0; }
@@ -105,15 +164,13 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .kv dt { color: var(--mute); }
 .kv dd { margin: 0; word-break: break-all; }
 
-.bottom { color: var(--mute); font-size: 12px; padding: 0 28px 28px; }
+.bottom { color: var(--mute); font-size: 12px; padding: 0 var(--pad) 28px; max-width: var(--page); margin: 0 auto; }
 .bottom a { color: var(--mute); }
 
 /* Narrow windows: tighter spacing, the header wraps instead of squeezing. */
 @media (max-width: 640px) {
-  .top { flex-wrap: wrap; padding: 16px; gap: 12px; }
+  .top-in { flex-wrap: wrap; gap: 12px; }
   .top .logo { width: 44px; height: 44px; }
   .demo-badge { margin-left: 0; }
-  .layout { padding: 14px; gap: 14px; }
-  main { padding: 20px 18px; }
-  .bottom { padding: 0 16px 20px; }
+  .bottom { padding-bottom: 20px; }
 }

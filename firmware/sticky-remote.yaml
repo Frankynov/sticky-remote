@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.3.0"
+  firmware_version: "0.4.0"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -124,6 +124,8 @@ esphome:
             remote_ui::calibration_enabled() = ${touch_calibration};
             sticky::set_default_touch_cal("${touch_map}");
             sticky::load_touch_cal();
+            sticky::load_sound();
+            sticky::keep_scan_results();
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
             // Subscribe to the chosen entities before the API connects.
@@ -225,15 +227,21 @@ ota:
 
 # Settings shown on the Sticky's device page in Home Assistant.
 select:
+  # Also set from the setup page; stored by sticky_device.h.
   - platform: template
     id: touch_sound
     name: "Touch sound"
     icon: mdi:volume-high
     entity_category: config
     options: ["Off", "Quiet", "Normal"]
-    initial_option: "Quiet"
-    optimistic: true
-    restore_value: true
+    update_interval: 60s
+    lambda: |-
+      static const char *const NAMES[] = {"Off", "Quiet", "Normal"};
+      return std::string(NAMES[sticky::sound()]);
+    set_action:
+      - lambda: |-
+          sticky::set_sound(x == "Off" ? 0 : x == "Quiet" ? 1 : 2);
+          id(touch_sound).publish_state(x);
 
 time:
   - platform: homeassistant
@@ -415,7 +423,7 @@ script:
     mode: restart
     then:
       - lambda: |-
-          const size_t level = id(touch_sound).active_index().value_or(1);
+          const uint8_t level = sticky::sound();
           if (level == 0) return;   // Off
           static esp_timer_handle_t off = nullptr;
           if (off == nullptr) {

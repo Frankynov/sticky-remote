@@ -16,6 +16,7 @@
 //   {"sticky":"setup","cmd":"set","settings":{...},"wifi":{"ssid":"…","pass":"…"}}
 //                                                      -> {"ok":true,"saved":true,"restarting":true}
 //   {"sticky":"setup","cmd":"reset"}                   -> clears the settings, restarts
+//   {"sticky":"setup","cmd":"scan"}                    -> starts a Wi-Fi scan; "get" lists the networks
 //   {"sticky":"setup","cmd":"calibrate"}               -> shows the touch calibration screen (dev builds)
 //   {"sticky":"setup","cmd":"touch_reset"}             -> forgets the touch calibration (dev builds)
 // The board also sends the info line ("event":"hello") once at boot. Send at
@@ -43,6 +44,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -52,6 +54,8 @@ namespace sticky {
 
 static const char *const TAG = "sticky";
 constexpr int PROTOCOL = 1;
+// What this firmware's USB protocol can do beyond version 1, for the setup page.
+static const char *const CAPS[] = {"scan", "touch_sound"};
 
 struct Settings {
   std::string player, remote, player_name, app, app_label;
@@ -121,6 +125,31 @@ inline bool save(const Settings &s) {
   const bool ok = pref().save(&st) && esphome::global_preferences->sync();
   if (ok) stored_present() = true;
   return ok;
+}
+
+// --- Touch sound (its own preference: the settings' stored layout stays as it was) ---
+static const char *const SOUND_NAMES[] = {"off", "quiet", "normal"};
+
+inline uint8_t &sound() {
+  static uint8_t level = 1;   // quiet
+  return level;
+}
+
+inline esphome::ESPPreferenceObject &sound_pref() {
+  static esphome::ESPPreferenceObject p = esphome::global_preferences->make_preference<uint8_t>(0x53534E44, true);
+  return p;
+}
+
+inline void load_sound() {
+  uint8_t v = 1;
+  if (sound_pref().load(&v) && v <= 2) sound() = v;
+}
+
+inline void set_sound(uint8_t level) {
+  if (level > 2 || level == sound()) return;
+  sound() = level;
+  sound_pref().save(&level);
+  esphome::global_preferences->sync();
 }
 
 // --- Touch calibration (its own preference, so settings resets keep it) -------
@@ -462,6 +491,13 @@ inline remote_ui::GrayImage poster_image() {
   return {};
 }
 
+/// Keeps the Wi-Fi scan results in memory (ESPHome drops them once connected),
+/// so the setup page can list networks whenever it asks.
+inline void keep_scan_results() {
+  if (esphome::wifi::global_wifi_component != nullptr)
+    esphome::wifi::global_wifi_component->set_keep_scan_results(true);
+}
+
 /// Subscribes to the chosen entities. Call before the API connects (on_boot).
 inline void subscribe(esphome::api::APIServer *api) {
   if (api == nullptr) return;
@@ -558,6 +594,9 @@ inline std::string info(const char *event) {
 #define X(f) st[#f] = settings().f;
     STICKY_FIELDS(X)
 #undef X
+    st["touch_sound"] = SOUND_NAMES[sound()];
+    JsonArray caps = root["caps"].to<JsonArray>();
+    for (const char *cap : CAPS) caps.add(cap);
     if (w != nullptr) {
       JsonArray nets = root["networks"].to<JsonArray>();
       int n = 0;
@@ -606,6 +645,11 @@ inline void handle(const std::string &line) {
       if (ssid.empty() || ssid.size() > 32 || pass.size() > 64) return send_error("Wi-Fi name or password too long.");
       esphome::wifi::global_wifi_component->save_wifi_sta(ssid, pass);
     }
+    if (!in.isNull() && in["touch_sound"].is<const char *>()) {
+      const std::string level = in["touch_sound"].as<const char *>();
+      for (uint8_t i = 0; i < 3; i++)
+        if (level == SOUND_NAMES[i]) set_sound(i);
+    }
     if (!in.isNull() && !save(s)) return send_error("Could not save the settings.");
     send_line(esphome::json::build_json([](JsonObject root) {
       root["sticky"] = "setup";
@@ -614,6 +658,17 @@ inline void handle(const std::string &line) {
       root["restarting"] = true;
     }));
     restart_at() = esphome::millis() + 800;
+  } else if (cmd == "scan") {             // looks for Wi-Fi networks; ask again in ~3 s for the list
+    // Straight to the driver: ESPHome's own scan belongs to its connection
+    // logic. Its handler stores the results (kept, see keep_scan_results()).
+    wifi_scan_config_t cfg{};
+    cfg.show_hidden = false;
+    const esp_err_t err = esp_wifi_scan_start(&cfg, false);
+    send_line(esphome::json::build_json([err](JsonObject root) {
+      root["sticky"] = "setup";
+      root["ok"] = true;
+      root["scanning"] = err == ESP_OK;   // false: one is already running, or it's connecting
+    }));
   } else if (cmd == "calibrate") {        // shows the touch calibration screen (dev builds)
     if (!remote_ui::calibration_enabled()) return send_error("Touch calibration isn't in this firmware.");
     remote_ui::calib_start();

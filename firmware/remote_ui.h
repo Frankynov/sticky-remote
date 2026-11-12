@@ -46,9 +46,9 @@ constexpr int VOL_Y = 724, VOL_H = 62, VOL_BTN_W = 100;
 constexpr int BIG_BTN_W = 300, BIG_BTN_H = 72, BIG_BTN_Y = 610;
 constexpr float SKIP_SECONDS = 10.0f;
 // Remote page
-constexpr int PAD_CX = 240, PAD_CY = 404, PAD_R = 158, PAD_R_IN = 60;
-constexpr int KEY_Y = 580, KEY_H = 72, KEY_W = 104, KEY_GAP = 12;
-constexpr int MINI_Y = 664, MINI_H = 48;
+constexpr int PAD_CX = 240, PAD_CY = 390, PAD_R = 150, PAD_R_IN = 58;
+constexpr int KEY_Y = 550, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
+constexpr int MINI_Y = 630, MINI_H = 82, MINI_BTN_W = 78;   // what's playing, between -10 s and +10 s
 
 // The top row: the light tiles (one or two) and the player's power tile.
 inline int tile_count(int lights) { return lights + 1; }
@@ -112,7 +112,7 @@ inline uint8_t light_icon_index(const std::string &name) {
   return ICON_KIND_BULB;
 }
 // What the Remote page shows as pressed (on-screen feedback for pad and keys).
-enum class Press : uint8_t { NONE, UP, DOWN, LEFT, RIGHT, OK, KEY_BACK, KEY_HOME, KEY_INFUSE, KEY_PLAY };
+enum class Press : uint8_t { NONE, UP, DOWN, LEFT, RIGHT, OK, KEY_BACK, KEY_HOME, KEY_INFUSE, KEY_PLAY, KEY_REW, KEY_FF };
 // Feedback clears this long after the last press. Long enough that a quick run of
 // presses moves the highlight instead of waiting behind a refresh that clears it.
 constexpr uint32_t PRESS_SHOW_MS = 1500;
@@ -523,14 +523,18 @@ struct Ctx {
 };
 
 inline void fill_rrect(Ctx &c, int x, int y, int w, int h, int r, Color col) {
-  r = std::min(r, std::min(w, h) / 2);
-  c.it.filled_rectangle(x + r, y, w - 2 * r, h, col);
-  c.it.filled_rectangle(x, y + r, r, h - 2 * r, col);
-  c.it.filled_rectangle(x + w - r, y + r, r, h - 2 * r, col);
-  c.it.filled_circle(x + r, y + r, r, col);
-  c.it.filled_circle(x + w - r - 1, y + r, r, col);
-  c.it.filled_circle(x + r, y + h - r - 1, r, col);
-  c.it.filled_circle(x + w - r - 1, y + h - r - 1, r, col);
+  // Row by row: a corner pixel is in when its centre is inside the corner's
+  // circle (integer maths, in half pixels). Stays exactly inside w x h, so a
+  // pill's ends are true half circles with no bump.
+  r = std::max(0, std::min(r, std::min(w, h) / 2));
+  for (int j = 0; j < r; j++) {
+    const int dy = 2 * (r - j) - 1;
+    int inset = 0;
+    while (inset < r && (2 * (r - inset) - 1) * (2 * (r - inset) - 1) + dy * dy > 4 * r * r) inset++;
+    c.it.filled_rectangle(x + inset, y + j, w - 2 * inset, 1, col);
+    c.it.filled_rectangle(x + inset, y + h - 1 - j, w - 2 * inset, 1, col);
+  }
+  c.it.filled_rectangle(x, y + r, w, h - 2 * r, col);
 }
 
 // Outline of `t` px: an ink rounded rect with a paper one inside.
@@ -824,43 +828,61 @@ inline void draw_off(Ctx &c) {
 // Outlined pill; the active half is filled inside the outline.
 inline void draw_tabs(Ctx &c, Page active) {
   // An outlined track; the selected page is a pill of its own inside it.
+  // Remote, the everyday page, comes first.
   const int x0 = M, x1 = W - M, mid = W / 2, t = 3, inset = t + 3;
   stroke_rrect(c, x0, TAB_Y, x1 - x0, TAB_H, TAB_H / 2, t);
   const int ph = TAB_H - 2 * inset, py = TAB_Y + inset;
-  const int px0 = active == Page::NOW ? x0 + inset : mid + 2;
-  const int px1 = active == Page::NOW ? mid - 2 : x1 - inset;
+  const int px0 = active == Page::REMOTE ? x0 + inset : mid + 2;
+  const int px1 = active == Page::REMOTE ? mid - 2 : x1 - inset;
   fill_rrect(c, px0, py, px1 - px0, ph, ph / 2, c.ink);
   const int cy = TAB_Y + TAB_H / 2;
-  c.it.print((x0 + mid) / 2, cy, c.f.t22, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER, "Now playing");
-  c.it.print((mid + x1) / 2, cy, c.f.t22, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER, "Remote");
+  c.it.print((x0 + mid) / 2, cy, c.f.t22, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER, "Remote");
+  c.it.print((mid + x1) / 2, cy, c.f.t22, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER, "Now playing");
 }
 
 inline int key_x(int i) { return M + i * (KEY_W + KEY_GAP); }
 
-// One-line now-playing strip under the remote keys; tap it for the full view.
+// What's playing, on the Remote page: -10 s, the title with its position, +10 s.
+// Tapping the middle opens Now playing (artwork and the seek bar).
 inline void draw_mini(Ctx &c, const Model &m, int64_t now_epoch) {
-  const int y = MINI_Y;
+  const int y = MINI_Y, h = MINI_H, cx = W / 2;
   if (m.mode() != Mode::PLAYING) {
-    c.it.print(W / 2, y + 22, c.f.t20, c.ink, TextAlign::CENTER, "Nothing playing");
+    c.it.print(cx, y + h / 2, c.f.t20, c.ink, TextAlign::CENTER, "Nothing playing");
     return;
   }
-  c.it.print(M + 2, y + 20, c.f.i24, c.ink, TextAlign::CENTER_LEFT,
-             m.atv_state == "playing" ? ICON_PAUSE : ICON_PLAY);
+  static const char *const icons[2] = {ICON_REW, ICON_FF};
+  static const Press keys[2] = {Press::KEY_REW, Press::KEY_FF};
+  for (int i = 0; i < 2; i++) {
+    const int x = i == 0 ? M : W - M - MINI_BTN_W;
+    const bool down = m.pressed == keys[i];
+    if (down) fill_rrect(c, x, y, MINI_BTN_W, h, 16, c.ink);
+    else stroke_rrect(c, x, y, MINI_BTN_W, h, 16, 3);
+    c.it.print(x + MINI_BTN_W / 2, y + h / 2, c.f.i64, down ? c.paper : c.ink, TextAlign::CENTER, icons[i]);
+  }
+  const int x0 = M + MINI_BTN_W + 12, x1 = W - M - MINI_BTN_W - 12;
+  print_fit(c, cx, y + 15, c.f.t20, c.ink, TextAlign::CENTER, m.title.empty() ? std::string("Playing") : m.title,
+            x1 - x0);
   const float pos = live_position(m, now_epoch);
-  char tbuf[24] = "";
-  if (!std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0) {
+  const bool timed = !std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0;
+  char line[40] = "";
+  if (timed) {
     char a[12], b[12];
     fmt_hm(a, sizeof a, pos);
     fmt_hm(b, sizeof b, m.duration);
-    snprintf(tbuf, sizeof tbuf, "%s / %s", a, b);
-    c.it.print(W - M, y + 20, c.f.t18, c.ink, TextAlign::CENTER_RIGHT, tbuf);
-    c.it.filled_rectangle(M, y + 38, W - 2 * M, 3, c.ink);
-    const int xf = M + (int) ((W - 2 * M) * std::min(1.0f, pos / m.duration));
-    c.it.filled_rectangle(M, y + 36, xf - M + 1, 7, c.ink);
+    snprintf(line, sizeof line, "%s / %s", a, b);
+  } else {
+    snprintf(line, sizeof line, "%s", m.atv_state == "playing" ? "Playing" : "Paused");
   }
-  const int tw = tbuf[0] ? text_width(c, c.f.t18, tbuf) + 16 : 0;
-  print_fit(c, M + 34, y + 20, c.f.t20, c.ink, TextAlign::CENTER_LEFT,
-            m.title.empty() ? std::string("Playing") : m.title, W - 2 * M - 34 - tw);
+  // The play/pause state as an icon, then the times, centred together.
+  const int tw = text_width(c, c.f.t18, line), iw = 24, gap = 4;
+  const int lx = cx - (iw + gap + tw) / 2;
+  c.it.print(lx, y + 43, c.f.i24, c.ink, TextAlign::CENTER_LEFT, m.atv_state == "playing" ? ICON_PLAY : ICON_PAUSE);
+  c.it.print(lx + iw + gap, y + 42, c.f.t18, c.ink, TextAlign::CENTER_LEFT, line);
+  if (timed) {
+    c.it.filled_rectangle(x0, y + 68, x1 - x0, 3, c.ink);
+    const int xf = x0 + (int) ((x1 - x0) * std::min(1.0f, pos / m.duration));
+    c.it.filled_rectangle(x0, y + 66, xf - x0 + 1, 7, c.ink);
+  }
 }
 
 // One quarter of the pad ring filled with ink: the pressed arrow. Wedges keep
@@ -1197,23 +1219,28 @@ inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_t
     return NONE;
   }
   if (mode != Mode::OFF && in(x, y, 0, TAB_Y - 4, W, TAB_H + 12))   // the whole strip, to the poster
-    return x < W / 2 ? TAB_NOW : TAB_REMOTE;
+    return x < W / 2 ? TAB_REMOTE : TAB_NOW;
 
   if (mode != Mode::OFF && m.page == Page::REMOTE) {
     // Pad: the centre is OK, the ring splits into four 90-degree wedges.
     const int dx = x - PAD_CX, dy = y - PAD_CY;
     const int d2 = dx * dx + dy * dy;
     if (d2 <= PAD_R_IN * PAD_R_IN) return NAV_SELECT;
-    if (d2 <= (PAD_R + 24) * (PAD_R + 24)) {
+    if (d2 <= (PAD_R + 8) * (PAD_R + 8)) {
       if (std::abs(dx) > std::abs(dy)) return dx < 0 ? NAV_LEFT : NAV_RIGHT;
       return dy < 0 ? NAV_UP : NAV_DOWN;
     }
-    if (in(x, y, 0, KEY_Y - 8, W, KEY_H + 12)) {
+    if (in(x, y, 0, KEY_Y - 2, W, KEY_H + 8)) {
       const int i = std::max(0, std::min(3, (x - M + KEY_GAP / 2) / (KEY_W + KEY_GAP)));
       static const Action keys[4] = {NAV_BACK, NAV_HOME, OPEN_INFUSE, PLAY_PAUSE};
       return keys[i];
     }
-    if (in(x, y, 0, MINI_Y - 4, W, MINI_H + 8)) return mode == Mode::PLAYING ? TAB_NOW : NONE;
+    if (in(x, y, 0, MINI_Y - 4, W, MINI_H + 8)) {
+      if (mode != Mode::PLAYING) return NONE;
+      if (x < M + MINI_BTN_W + 8) return SKIP_BACK;
+      if (x > W - M - MINI_BTN_W - 8) return SKIP_FWD;
+      return TAB_NOW;   // the title: artwork and the seek bar
+    }
     return NONE;
   }
 
@@ -1240,19 +1267,16 @@ inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_t
   return NONE;
 }
 
-// New Apple TV state from HA. Playback starting shows Now playing; going
-// back to the menus shows the Remote pad (the first state after boot picks
-// the page the same way).
+// New Apple TV state from HA.
 inline void set_atv_state(const std::string &state) {
   auto &m = model();
   const Mode before = m.mode();
   m.atv_state = state;
   const Mode after = m.mode();
   if (after != Mode::PLAYING && before == Mode::PLAYING) clear_media(m, true);
-  if (!m.state_seen || before != after) {
-    if (after == Mode::PLAYING) m.page = Page::NOW;
-    else if (after == Mode::IDLE) m.page = Page::REMOTE;
-  }
+  // The Remote page does everything, playback included, so starting a film no
+  // longer switches away from it. Now playing has nothing to show once playback ends.
+  if (before != after && after != Mode::PLAYING) m.page = Page::REMOTE;
   m.state_seen = true;
   request();
 }
@@ -1410,6 +1434,8 @@ inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
       case NAV_HOME: press_feedback(Press::KEY_HOME); break;
       case OPEN_INFUSE: press_feedback(Press::KEY_INFUSE); break;
       case PLAY_PAUSE: press_feedback(Press::KEY_PLAY); break;
+      case SKIP_BACK: press_feedback(Press::KEY_REW); break;
+      case SKIP_FWD: press_feedback(Press::KEY_FF); break;
       default: break;
     }
   }
