@@ -42,7 +42,7 @@ def shot(extra, taps=(), with_poster=False):
     return im
 
 
-screens = [shot(PLAYING, with_poster=True), shot(PLAYING, taps=[(352, 201)], with_poster=True),
+screens = [shot(PLAYING, with_poster=True), shot(PLAYING, taps=[(240, 440)], with_poster=True),   # a pressed arrow
            shot(["atv_state idle", "app Infuse"]), shot(["atv_state off"])]
 gap = 24
 sheet = Image.new("L", (len(screens) * 480 + (len(screens) + 1) * gap, 800 + 2 * gap), 150)

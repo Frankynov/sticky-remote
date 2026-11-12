@@ -36,19 +36,20 @@ constexpr int W = 480, H = 800;
 constexpr int M = 14;
 constexpr int STATUS_H = 36;
 constexpr int TILE_Y = 42, TILE_H = 124, TILE_W = 140, TILE_GAP = 16;
-constexpr int TAB_Y = 174, TAB_H = 54;                               // "Now playing | Remote"
-constexpr int POSTER_Y = 238, POSTER_H = 256, POSTER_W = W - 2 * 20;  // contain-fit box
-constexpr int TITLE_Y = 506, SUB_Y = 544;
-constexpr int SEEK_Y = 582, SEEK_H = 14, TIME_Y = 602;
-constexpr int SEEK_X0 = M + 10, SEEK_X1 = W - M - 10;
-constexpr int TRANSPORT_CY = 672, PLAY_R = 42, SKIP_DX = 130;
+// One page: tiles, the pad, the keys, what's playing, volume. No tabs, so
+// nothing a tap does needs more than a partial refresh.
+constexpr int PAD_CX = 240, PAD_CY = 328, PAD_R = 150, PAD_R_IN = 58;
+constexpr int KEY_Y = 488, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
+// What's playing: a small artwork, then title, seek bar and the -10 s / +10 s keys.
+constexpr int NP_Y = 568, NP_H = 146;
+constexpr int POSTER_W = 98, POSTER_H = NP_H;                 // the artwork's contain-fit box
+constexpr int NP_X = M + POSTER_W + 14;                       // where the text column starts
+constexpr int SEEK_Y = NP_Y + 52, SEEK_H = 14, TIME_Y = NP_Y + 79;
+constexpr int SEEK_X0 = NP_X + 8, SEEK_X1 = W - M - 8;
+constexpr int SKIP_Y = NP_Y + 94, SKIP_H = NP_H - 94, SKIP_GAP = 10;
 constexpr int VOL_Y = 724, VOL_H = 62, VOL_BTN_W = 100;
 constexpr int BIG_BTN_W = 300, BIG_BTN_H = 72, BIG_BTN_Y = 610;
 constexpr float SKIP_SECONDS = 10.0f;
-// Remote page
-constexpr int PAD_CX = 240, PAD_CY = 390, PAD_R = 150, PAD_R_IN = 58;
-constexpr int KEY_Y = 550, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
-constexpr int MINI_Y = 630, MINI_H = 82, MINI_BTN_W = 78;   // what's playing, between -10 s and +10 s
 
 // The top row: the light tiles (one or two) and the player's power tile.
 inline int tile_count(int lights) { return lights + 1; }
@@ -130,7 +131,7 @@ struct Model {
   bool online = false;
   float battery = NAN;
   bool usb = false;
-  Page page = Page::REMOTE;
+  Page page = Page::REMOTE;   // always Remote since 0.5.0 (one page); kept for the engine's API
   bool state_seen = false;
   Press pressed = Press::NONE;
   uint32_t pressed_at = 0;
@@ -248,14 +249,17 @@ inline void clear_media(Model &m, bool artwork) {
 
 // --- Redraw queue ---------------------------------------------------------------
 // The e-paper update is asynchronous: requests coalesce here and the YAML
-// scheduler starts one refresh at a time, full when the layout changes.
+// scheduler starts one refresh at a time. Everything a tap or a state change
+// causes is a fast partial refresh. Partials leave ghosting, counted as
+// `dirt`; the full refresh that cleans it waits until the Sticky has been
+// left alone for a few seconds, so it never interrupts browsing.
 struct Redraw {
   bool dirty = true, full = true;
   uint32_t requested_at = 0;
-  int partials = 0;
+  int dirt = 0;
+  uint32_t touched_at = 0;
   int drawn_minute = -2, drawn_clock = -2;
   Mode drawn_mode = Mode::OFF;
-  Page drawn_page = Page::REMOTE;
   Setup drawn_setup = Setup::NONE;
   bool drawn_once = false;
 };
@@ -271,6 +275,16 @@ inline void request(bool full = false) {
   r.full = r.full || full;
   r.requested_at = esphome::millis();
 }
+
+/// A change that covers a large area (new artwork, the player turning on):
+/// drawn with a partial refresh now, cleaned sooner.
+inline void request_big() {
+  redraw().dirt += 6;
+  request();
+}
+
+/// A tap or a button press: holds back the cleaning refresh.
+inline void touched() { redraw().touched_at = esphome::millis(); }
 
 // --- Onboarding state (fed by the firmware's Wi-Fi/API hooks) ----------------
 inline void set_network(bool connected, bool hotspot, const std::string &ip) {
@@ -472,21 +486,27 @@ inline void feedback_tick() {
   }
 }
 
-// Partial refreshes leave ghosting; clean with a full one every N of them.
-constexpr int FULL_EVERY = 20;
+constexpr int CLEAN_AT = 16;                // partial refreshes' worth of ghosting before a cleaning one
+constexpr uint32_t CLEAN_IDLE_MS = 3000;    // ...and only this long after the last touch
 
 // Called by the scheduler when the panel is idle. Returns true when a refresh
 // should start now, and whether it must be a full one.
 inline bool take_refresh(const Model &m, bool &full) {
   auto &r = redraw();
-  if (!r.dirty) return false;
-  if (esphome::millis() - r.requested_at < 250) return false;  // let bursts settle
-  full = r.full || !r.drawn_once || m.mode() != r.drawn_mode || m.page != r.drawn_page ||
-         m.setup() != r.drawn_setup || r.partials >= FULL_EVERY;
-  r.partials = full ? 0 : r.partials + 1;
+  const uint32_t now = esphome::millis();
+  const bool can_clean = r.dirt >= CLEAN_AT && now - r.touched_at >= CLEAN_IDLE_MS && !m.sleeping &&
+                         m.pressed == Press::NONE;
+  if (!r.dirty) {
+    if (!can_clean) return false;
+    full = true;   // nothing new to draw: just clean
+  } else {
+    if (now - r.requested_at < 250) return false;  // let bursts settle
+    if (r.drawn_once && m.mode() != r.drawn_mode) r.dirt += 6;   // most of the lower screen changes
+    full = r.full || !r.drawn_once || m.setup() != r.drawn_setup || can_clean;
+  }
+  r.dirt = full ? 0 : r.dirt + 1;
   r.dirty = r.full = false;
   r.drawn_mode = m.mode();
-  r.drawn_page = m.page;
   r.drawn_setup = m.setup();
   r.drawn_once = true;
   return true;
@@ -581,9 +601,10 @@ struct GrayImage {
   int w = 0, h = 0;
 };
 
-// Draws the artwork centred in the poster box, dithered to black and white or
-// to the panel's four greys; returns its drawn rectangle so the caller can frame it.
-inline void draw_poster(Ctx &c, const GrayImage &img, int &ox, int &oy, int &dw, int &dh) {
+// Draws the artwork centred in the box at (bx, by), POSTER_W x POSTER_H, dithered
+// to black and white or to the panel's four greys; returns its drawn rectangle
+// so the caller can frame it.
+inline void draw_poster(Ctx &c, const GrayImage &img, int bx, int by, int &ox, int &oy, int &dw, int &dh) {
   const uint8_t *buf = img.px;
   const int sw = img.w, sh = img.h;
   dw = dh = 0;
@@ -591,8 +612,8 @@ inline void draw_poster(Ctx &c, const GrayImage &img, int &ox, int &oy, int &dw,
   const float scale = std::min((float) POSTER_W / sw, (float) POSTER_H / sh);
   dw = std::max(1, (int) (sw * scale));
   dh = std::max(1, (int) (sh * scale));
-  ox = (W - dw) / 2;
-  oy = POSTER_Y + (POSTER_H - dh) / 2;
+  ox = bx + (POSTER_W - dw) / 2;
+  oy = by + (POSTER_H - dh) / 2;
 
   // Error rows scaled by 16, +2 guard on each side.
   static int16_t err[2][POSTER_W + 4];
@@ -759,129 +780,70 @@ inline std::string subtitle(const Model &m) {
   return s;
 }
 
-inline void draw_playing(Ctx &c, const Model &m, const GrayImage &poster, int64_t now_epoch) {
-  int ox = 0, oy = 0, dw = 0, dh = 0;
-  if (m.poster_loaded && poster.px != nullptr) draw_poster(c, poster, ox, oy, dw, dh);
-  if (dw > 0) {
-    c.it.rectangle(ox - 1, oy - 1, dw + 2, dh + 2, c.ink);
-  } else {
-    c.it.print(W / 2, POSTER_Y + POSTER_H / 2, c.f.i120, c.ink, TextAlign::CENTER, ICON_MOVIE);
-  }
-
-  print_fit(c, W / 2, TITLE_Y, c.f.t30, c.ink, TextAlign::TOP_CENTER,
-            m.title.empty() ? std::string("Playing") : m.title, W - 2 * M);
-  print_fit(c, W / 2, SUB_Y, c.f.t20, c.ink, TextAlign::TOP_CENTER, subtitle(m), W - 2 * M);
-
-  // Seek bar
-  const float pos = live_position(m, now_epoch);
-  const bool seekable = !std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0;
-  stroke_rrect(c, SEEK_X0, SEEK_Y, SEEK_X1 - SEEK_X0, SEEK_H, SEEK_H / 2, 2);
-  const int cy = SEEK_Y + SEEK_H / 2;
-  if (seekable) {
-    const int xf = SEEK_X0 + (int) ((SEEK_X1 - SEEK_X0) * std::min(1.0f, pos / m.duration));
-    if (xf - SEEK_X0 > SEEK_H) fill_rrect(c, SEEK_X0, SEEK_Y, xf - SEEK_X0, SEEK_H, SEEK_H / 2, c.ink);
-    c.it.filled_circle(xf, cy, 11, c.ink);
-    c.it.filled_circle(xf, cy, 7, c.paper);
-    char a[12], b[12], d[12];
-    fmt_hm(a, sizeof a, pos);
-    fmt_hm(b + 1, sizeof b - 1, m.duration - pos + 59.0f);  // remaining rounds up
-    b[0] = '-';
-    fmt_hm(d, sizeof d, m.duration);
-    c.it.print(SEEK_X0, TIME_Y + 12, c.f.t20, c.ink, TextAlign::CENTER_LEFT, a);
-    c.it.print(SEEK_X1, TIME_Y + 12, c.f.t20, c.ink, TextAlign::CENTER_RIGHT, b);
-    // Under the bar: whether playback is live, so a time that moves once a
-    // minute reads as "playing", not "stuck".
-    const bool playing = m.atv_state == "playing";
-    char mid[48];
-    snprintf(mid, sizeof mid, "%s · %s", playing ? "Playing" : "Paused", d);
-    const int icon_w = 24, gap = 4, tw = text_width(c, c.f.t18, mid);
-    const int x0 = W / 2 - (icon_w + gap + tw) / 2;
-    c.it.print(x0, TIME_Y + 13, c.f.i24, c.ink, TextAlign::CENTER_LEFT, playing ? ICON_PLAY : ICON_PAUSE);
-    c.it.print(x0 + icon_w + gap, TIME_Y + 12, c.f.t18, c.ink, TextAlign::CENTER_LEFT, mid);
-  }
-
-  // Transport
-  const int tcy = TRANSPORT_CY;
-  c.it.print(W / 2 - SKIP_DX, tcy, c.f.i64, c.ink, TextAlign::CENTER, ICON_REW);
-  c.it.print(W / 2 + SKIP_DX, tcy, c.f.i64, c.ink, TextAlign::CENTER, ICON_FF);
-  c.it.filled_circle(W / 2, tcy, PLAY_R, c.ink);
-  c.it.print(W / 2, tcy, c.f.i52, c.paper, TextAlign::CENTER,
-             m.atv_state == "playing" ? ICON_PAUSE : ICON_PLAY);
-}
-
-inline void draw_idle(Ctx &c, const Model &m, const char *infuse_label) {
-  const int cy = POSTER_Y + 110;
-  c.it.print(W / 2, cy, c.f.i120, c.ink, TextAlign::CENTER, ICON_MOVIE);
-  c.it.print(W / 2, cy + 100, c.f.t30, c.ink, TextAlign::CENTER, "Nothing playing");
-  const std::string where = m.app.empty() ? std::string("Apple TV · Home screen") : "Apple TV · " + m.app;
-  print_fit(c, W / 2, cy + 136, c.f.t20, c.ink, TextAlign::CENTER, where, W - 2 * M);
-  draw_big_button(c, infuse_label, nullptr);
-}
-
 inline void draw_off(Ctx &c) {
-  const int cy = TAB_Y + 160;
+  const int cy = 334;
   c.it.print(W / 2, cy, c.f.i120, c.ink, TextAlign::CENTER, ICON_TV_OFF);
   c.it.print(W / 2, cy + 100, c.f.t30, c.ink, TextAlign::CENTER, "Apple TV is off");
   draw_big_button(c, "Turn on", ICON_POWER);
 }
 
-// Outlined pill; the active half is filled inside the outline.
-inline void draw_tabs(Ctx &c, Page active) {
-  // An outlined track; the selected page is a pill of its own inside it.
-  // Remote, the everyday page, comes first.
-  const int x0 = M, x1 = W - M, mid = W / 2, t = 3, inset = t + 3;
-  stroke_rrect(c, x0, TAB_Y, x1 - x0, TAB_H, TAB_H / 2, t);
-  const int ph = TAB_H - 2 * inset, py = TAB_Y + inset;
-  const int px0 = active == Page::REMOTE ? x0 + inset : mid + 2;
-  const int px1 = active == Page::REMOTE ? mid - 2 : x1 - inset;
-  fill_rrect(c, px0, py, px1 - px0, ph, ph / 2, c.ink);
-  const int cy = TAB_Y + TAB_H / 2;
-  c.it.print((x0 + mid) / 2, cy, c.f.t22, active == Page::REMOTE ? c.paper : c.ink, TextAlign::CENTER, "Remote");
-  c.it.print((mid + x1) / 2, cy, c.f.t22, active == Page::NOW ? c.paper : c.ink, TextAlign::CENTER, "Now playing");
-}
-
 inline int key_x(int i) { return M + i * (KEY_W + KEY_GAP); }
+inline int skip_w() { return (W - M - NP_X - SKIP_GAP) / 2; }
+inline int skip_x(int i) { return NP_X + i * (skip_w() + SKIP_GAP); }
 
-// What's playing, on the Remote page: -10 s, the title with its position, +10 s.
-// Tapping the middle opens Now playing (artwork and the seek bar).
-inline void draw_mini(Ctx &c, const Model &m, int64_t now_epoch) {
-  const int y = MINI_Y, h = MINI_H, cx = W / 2;
+// What's playing, under the keys: artwork, title, a seek bar to tap, -10 s / +10 s.
+inline void draw_now(Ctx &c, const Model &m, const GrayImage &poster, int64_t now_epoch) {
   if (m.mode() != Mode::PLAYING) {
-    c.it.print(cx, y + h / 2, c.f.t20, c.ink, TextAlign::CENTER, "Nothing playing");
+    const int cy = NP_Y + NP_H / 2;
+    c.it.print(W / 2, cy - 14, c.f.t22, c.ink, TextAlign::CENTER, "Nothing playing");
+    const std::string where = m.app.empty() ? std::string("Home screen") : m.app;
+    print_fit(c, W / 2, cy + 14, c.f.t18, c.ink, TextAlign::CENTER, where, W - 2 * M);
     return;
   }
+  int ox = 0, oy = 0, dw = 0, dh = 0;
+  if (m.poster_loaded && poster.px != nullptr) draw_poster(c, poster, M, NP_Y, ox, oy, dw, dh);
+  if (dw > 0) {
+    c.it.rectangle(ox - 1, oy - 1, dw + 2, dh + 2, c.ink);
+  } else {
+    stroke_rrect(c, M, NP_Y, POSTER_W, NP_H, 10, 2);
+    c.it.print(M + POSTER_W / 2, NP_Y + NP_H / 2, c.f.i40, c.ink, TextAlign::CENTER, ICON_MOVIE);
+  }
+
+  const int tw = W - M - NP_X;
+  print_fit(c, NP_X, NP_Y + 11, c.f.t22, c.ink, TextAlign::CENTER_LEFT,
+            m.title.empty() ? std::string("Playing") : m.title, tw);
+  print_fit(c, NP_X, NP_Y + 34, c.f.t18, c.ink, TextAlign::CENTER_LEFT, subtitle(m), tw);
+
+  // Seek bar: tap anywhere on it to jump there.
+  const float pos = live_position(m, now_epoch);
+  const bool seekable = !std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0;
+  const bool playing = m.atv_state == "playing";
+  stroke_rrect(c, SEEK_X0, SEEK_Y, SEEK_X1 - SEEK_X0, SEEK_H, SEEK_H / 2, 2);
+  const int scy = SEEK_Y + SEEK_H / 2;
+  if (seekable) {
+    const int xf = SEEK_X0 + (int) ((SEEK_X1 - SEEK_X0) * std::min(1.0f, pos / m.duration));
+    if (xf - SEEK_X0 > SEEK_H) fill_rrect(c, SEEK_X0, SEEK_Y, xf - SEEK_X0, SEEK_H, SEEK_H / 2, c.ink);
+    c.it.filled_circle(xf, scy, 10, c.ink);
+    c.it.filled_circle(xf, scy, 6, c.paper);
+    char a[12], b[12];
+    fmt_hm(a, sizeof a, pos);
+    fmt_hm(b + 1, sizeof b - 1, m.duration - pos + 59.0f);  // remaining rounds up
+    b[0] = '-';
+    c.it.print(NP_X, TIME_Y, c.f.t18, c.ink, TextAlign::CENTER_LEFT, a);
+    c.it.print(W - M, TIME_Y, c.f.t18, c.ink, TextAlign::CENTER_RIGHT, b);
+  }
+  // Between the times: whether playback is live, so a bar that moves once a
+  // minute reads as "playing", not "stuck".
+  c.it.print((NP_X + W - M) / 2, TIME_Y + 1, c.f.i24, c.ink, TextAlign::CENTER, playing ? ICON_PLAY : ICON_PAUSE);
+
   static const char *const icons[2] = {ICON_REW, ICON_FF};
   static const Press keys[2] = {Press::KEY_REW, Press::KEY_FF};
   for (int i = 0; i < 2; i++) {
-    const int x = i == 0 ? M : W - M - MINI_BTN_W;
+    const int x = skip_x(i), w = skip_w();
     const bool down = m.pressed == keys[i];
-    if (down) fill_rrect(c, x, y, MINI_BTN_W, h, 16, c.ink);
-    else stroke_rrect(c, x, y, MINI_BTN_W, h, 16, 3);
-    c.it.print(x + MINI_BTN_W / 2, y + h / 2, c.f.i64, down ? c.paper : c.ink, TextAlign::CENTER, icons[i]);
-  }
-  const int x0 = M + MINI_BTN_W + 12, x1 = W - M - MINI_BTN_W - 12;
-  print_fit(c, cx, y + 15, c.f.t20, c.ink, TextAlign::CENTER, m.title.empty() ? std::string("Playing") : m.title,
-            x1 - x0);
-  const float pos = live_position(m, now_epoch);
-  const bool timed = !std::isnan(pos) && !std::isnan(m.duration) && m.duration > 0;
-  char line[40] = "";
-  if (timed) {
-    char a[12], b[12];
-    fmt_hm(a, sizeof a, pos);
-    fmt_hm(b, sizeof b, m.duration);
-    snprintf(line, sizeof line, "%s / %s", a, b);
-  } else {
-    snprintf(line, sizeof line, "%s", m.atv_state == "playing" ? "Playing" : "Paused");
-  }
-  // The play/pause state as an icon, then the times, centred together.
-  const int tw = text_width(c, c.f.t18, line), iw = 24, gap = 4;
-  const int lx = cx - (iw + gap + tw) / 2;
-  c.it.print(lx, y + 43, c.f.i24, c.ink, TextAlign::CENTER_LEFT, m.atv_state == "playing" ? ICON_PLAY : ICON_PAUSE);
-  c.it.print(lx + iw + gap, y + 42, c.f.t18, c.ink, TextAlign::CENTER_LEFT, line);
-  if (timed) {
-    c.it.filled_rectangle(x0, y + 68, x1 - x0, 3, c.ink);
-    const int xf = x0 + (int) ((x1 - x0) * std::min(1.0f, pos / m.duration));
-    c.it.filled_rectangle(x0, y + 66, xf - x0 + 1, 7, c.ink);
+    if (down) fill_rrect(c, x, SKIP_Y, w, SKIP_H, 12, c.ink);
+    else stroke_rrect(c, x, SKIP_Y, w, SKIP_H, 12, 3);
+    c.it.print(x + w / 2, SKIP_Y + SKIP_H / 2, c.f.i40, down ? c.paper : c.ink, TextAlign::CENTER, icons[i]);
   }
 }
 
@@ -935,7 +897,6 @@ inline void draw_remote(Ctx &c, const Model &m, int64_t now_epoch) {
     c.it.print(x + KEY_W / 2, KEY_Y + 24, c.f.i40, fg, TextAlign::CENTER, icons[i]);
     print_fit(c, x + KEY_W / 2, KEY_Y + 54, c.f.t18, fg, TextAlign::CENTER, labels[i], KEY_W - 8);
   }
-  draw_mini(c, m, now_epoch);
 }
 
 // Draws `text` word-wrapped from (x, y) within max_w; returns the y after it.
@@ -1126,10 +1087,8 @@ inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
   if (mode == Mode::OFF) {
     draw_off(c);
   } else {
-    draw_tabs(c, m.page);
-    if (m.page == Page::REMOTE) draw_remote(c, m, now_epoch);
-    else if (mode == Mode::PLAYING) draw_playing(c, m, poster, now_epoch);
-    else draw_idle(c, m, infuse_label);
+    draw_remote(c, m, now_epoch);
+    draw_now(c, m, poster, now_epoch);
     draw_volume(c, m);
   }
   if (m.sleeping) draw_sleep_banner(c);
@@ -1218,52 +1177,33 @@ inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_t
     if (x > W - M - VOL_BTN_W - 20) return VOL_UP;
     return NONE;
   }
-  if (mode != Mode::OFF && in(x, y, 0, TAB_Y - 4, W, TAB_H + 12))   // the whole strip, to the poster
-    return x < W / 2 ? TAB_REMOTE : TAB_NOW;
+  if (mode == Mode::OFF) return y > TILE_Y + TILE_H + 12 ? TURN_ON : NONE;   // the whole lower half
 
-  if (mode != Mode::OFF && m.page == Page::REMOTE) {
-    // Pad: the centre is OK, the ring splits into four 90-degree wedges.
-    const int dx = x - PAD_CX, dy = y - PAD_CY;
-    const int d2 = dx * dx + dy * dy;
-    if (d2 <= PAD_R_IN * PAD_R_IN) return NAV_SELECT;
-    if (d2 <= (PAD_R + 8) * (PAD_R + 8)) {
-      if (std::abs(dx) > std::abs(dy)) return dx < 0 ? NAV_LEFT : NAV_RIGHT;
-      return dy < 0 ? NAV_UP : NAV_DOWN;
-    }
-    if (in(x, y, 0, KEY_Y - 2, W, KEY_H + 8)) {
-      const int i = std::max(0, std::min(3, (x - M + KEY_GAP / 2) / (KEY_W + KEY_GAP)));
-      static const Action keys[4] = {NAV_BACK, NAV_HOME, OPEN_INFUSE, PLAY_PAUSE};
-      return keys[i];
-    }
-    if (in(x, y, 0, MINI_Y - 4, W, MINI_H + 8)) {
-      if (mode != Mode::PLAYING) return NONE;
-      if (x < M + MINI_BTN_W + 8) return SKIP_BACK;
-      if (x > W - M - MINI_BTN_W - 8) return SKIP_FWD;
-      return TAB_NOW;   // the title: artwork and the seek bar
-    }
-    return NONE;
+  // Pad: the centre is OK, the ring splits into four 90-degree wedges.
+  const int dx = x - PAD_CX, dy = y - PAD_CY;
+  const int d2 = dx * dx + dy * dy;
+  if (d2 <= PAD_R_IN * PAD_R_IN) return NAV_SELECT;
+  if (d2 <= (PAD_R + 8) * (PAD_R + 8)) {
+    if (std::abs(dx) > std::abs(dy)) return dx < 0 ? NAV_LEFT : NAV_RIGHT;
+    return dy < 0 ? NAV_UP : NAV_DOWN;
   }
+  if (in(x, y, 0, KEY_Y - 2, W, KEY_H + 8)) {
+    const int i = std::max(0, std::min(3, (x - M + KEY_GAP / 2) / (KEY_W + KEY_GAP)));
+    static const Action keys[4] = {NAV_BACK, NAV_HOME, OPEN_INFUSE, PLAY_PAUSE};
+    return keys[i];
+  }
+  if (mode != Mode::PLAYING || !in(x, y, 0, NP_Y - 2, W, NP_H + 6)) return NONE;
 
-  if (mode == Mode::IDLE && in(x, y, (W - BIG_BTN_W) / 2 - 20, BIG_BTN_Y - 20, BIG_BTN_W + 40, BIG_BTN_H + 40))
-    return OPEN_INFUSE;
-  if (mode == Mode::OFF && y > TILE_Y + TILE_H + 12) return TURN_ON;  // the whole lower half
-  if (mode != Mode::PLAYING) return NONE;
-
-  // Seek bar: generous band around the thin bar (the times row included).
-  if (in(x, y, 0, SEEK_Y - 22, W, TIME_Y + 26 - (SEEK_Y - 22))) {
+  // What's playing. The artwork is a large play/pause target.
+  if (x < NP_X - 7) return PLAY_PAUSE;
+  if (y >= SKIP_Y - 6) return x < skip_x(1) - SKIP_GAP / 2 ? SKIP_BACK : SKIP_FWD;
+  if (y >= SEEK_Y - 12) {   // a generous band around the thin bar
     if (std::isnan(m.duration) || m.duration <= 0) return NONE;
     float f = (float) (x - SEEK_X0) / (float) (SEEK_X1 - SEEK_X0);
     f = std::max(0.0f, std::min(1.0f, f));
     seek_to = f * m.duration;
     return SEEK;
   }
-  if (in(x, y, 0, TRANSPORT_CY - 48, W, 96)) {
-    if (x < W / 2 - PLAY_R - 20) return SKIP_BACK;
-    if (x > W / 2 + PLAY_R + 20) return SKIP_FWD;
-    return PLAY_PAUSE;
-  }
-  // Tapping the poster/title also toggles play/pause: the largest target.
-  if (in(x, y, 0, POSTER_Y, W, SUB_Y + 30 - POSTER_Y)) return PLAY_PAUSE;
   return NONE;
 }
 
@@ -1274,18 +1214,8 @@ inline void set_atv_state(const std::string &state) {
   m.atv_state = state;
   const Mode after = m.mode();
   if (after != Mode::PLAYING && before == Mode::PLAYING) clear_media(m, true);
-  // The Remote page does everything, playback included, so starting a film no
-  // longer switches away from it. Now playing has nothing to show once playback ends.
-  if (before != after && after != Mode::PLAYING) m.page = Page::REMOTE;
   m.state_seen = true;
   request();
-}
-
-inline void show_page(Page p) {
-  auto &m = model();
-  if (m.page == p) return;
-  m.page = p;
-  request(true);
 }
 
 // --- Optimistic updates ----------------------------------------------------------
@@ -1388,7 +1318,7 @@ inline void apply(const std::string &key, const std::string &v) {
     if (pic == m.picture) return;
     m.picture = pic;
     m.poster_loaded = false;
-    return request(true);
+    return request();
   } else {
     return;
   }
@@ -1416,14 +1346,60 @@ inline Actions *&actions() {
   return a;
 }
 
+// --- Hold to repeat ------------------------------------------------------------
+// Keeping a finger on an arrow (or a volume end) repeats it, so long lists
+// scroll without tapping. A repeat sends the command and nothing else: the
+// arrow is already shown pressed, so the screen has nothing to redraw.
+constexpr uint32_t HOLD_START_MS = 450, HOLD_EVERY_MS = 220, HOLD_MAX_MS = 8000;
+
+struct Hold {
+  Action action = NONE;
+  uint32_t since = 0, last = 0;
+};
+
+inline Hold &hold() {
+  static Hold h;
+  return h;
+}
+
+inline bool repeats(Action a) {
+  return a == NAV_UP || a == NAV_DOWN || a == NAV_LEFT || a == NAV_RIGHT || a == VOL_UP || a == VOL_DOWN;
+}
+
+/// The finger left the screen.
+inline void touch_released() { hold().action = NONE; }
+
+/// Call often while a finger may be down (the firmware: every 20 ms).
+inline void hold_tick(Actions &act) {
+  auto &h = hold();
+  if (h.action == NONE) return;
+  const uint32_t now = esphome::millis();
+  if (now - h.since > HOLD_MAX_MS || model().sleeping) {   // a release that never came
+    h.action = NONE;
+    return;
+  }
+  if (now - h.since < HOLD_START_MS || now - h.last < HOLD_EVERY_MS) return;
+  h.last = now;
+  touched();
+  if (h.action == VOL_UP || h.action == VOL_DOWN) {
+    act.volume(h.action == VOL_UP);
+  } else {
+    act.remote_command(nav_command(h.action));
+    model().pressed_at = now;   // the arrow stays shown as pressed
+  }
+}
+
 inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
   auto &m = model();
   if (m.sleeping) return NONE;
   float seek_to = 0;
   const Action a = hit(m, x, y, now_epoch, seek_to);
+  hold().action = NONE;
   if (a == NONE) return a;
+  touched();
+  if (repeats(a)) hold() = Hold{a, esphome::millis(), esphome::millis()};
   act.click();
-  if (m.page == Page::REMOTE && m.mode() != Mode::OFF) {
+  if (m.mode() != Mode::OFF) {
     switch (a) {
       case NAV_UP: press_feedback(Press::UP); break;
       case NAV_DOWN: press_feedback(Press::DOWN); break;
@@ -1471,8 +1447,6 @@ inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
       break;
     case VOL_DOWN: act.volume(false); break;
     case VOL_UP: act.volume(true); break;
-    case TAB_NOW: show_page(Page::NOW); break;
-    case TAB_REMOTE: show_page(Page::REMOTE); break;
     default:
       if (const char *cmd = nav_command(a)) act.remote_command(cmd);
       break;
@@ -1498,6 +1472,7 @@ enum Button { BTN_AI, BTN_UP, BTN_DOWN };
 
 inline void handle_button(Button b, int64_t now_epoch, Actions &act) {
   auto &m = model();
+  touched();
   if (m.calibrating && !m.sleeping) {
     if (b == BTN_UP) return calib_start();
     if (b == BTN_DOWN) return calib_stop();

@@ -148,7 +148,24 @@ details { margin-top: 2px; } summary { cursor: pointer; color: var(--mute); padd
 .device { background: #29292c; border-radius: 22px; padding: 14px 11px 18px; display: inline-block;
           box-shadow: 0 8px 22px rgba(0,0,0,.18); }
 .device canvas { display: block; width: 100%; height: auto; border-radius: 3px; }
-.hero { display: flex; gap: 22px; justify-content: center; margin: -4px 0 18px; }
+.hero { display: flex; gap: 22px; justify-content: center; margin: 0; }
+/* The first page: what to do on the left, what you get on the right. */
+.welcome { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: clamp(20px, 3vw, 48px); align-items: start; }
+.welcome .lead { margin-bottom: 16px; }
+@media (max-width: 1000px) { .welcome { grid-template-columns: 1fr; } .welcome .hero { order: -1; margin-bottom: 8px; } }
+button.big { font-size: 17px; padding: 12px 24px; }
+
+/* The last page: a checklist that ticks itself. */
+.todo { list-style: none; counter-reset: todo; padding: 0; margin: 0; display: grid; gap: 10px; }
+.todo li { counter-increment: todo; position: relative; padding: 12px 14px 4px 54px; border: 1px solid var(--line); border-radius: 12px; opacity: .6; }
+.todo li::before { content: counter(todo); position: absolute; left: 14px; top: 12px; width: 26px; height: 26px; border-radius: 50%;
+                   display: grid; place-items: center; font-weight: 700; font-size: 13px; border: 2px solid var(--line); color: var(--mute); }
+.todo li.now { opacity: 1; border-color: var(--accent); }
+.todo li.now::before { border-color: var(--accent); color: var(--accent); }
+.todo li.ok { opacity: 1; }
+.todo li.ok::before { content: "✓"; background: var(--ok); border-color: var(--ok); color: #fff; }
+.todo li p { margin: 4px 0 10px; color: var(--mute); }
+.todo li.now p { color: inherit; }
 .hero figure { margin: 0; text-align: center; }
 .hero .device { width: clamp(150px, 16vw, 210px); }
 .hero figcaption { color: var(--mute); font-size: 13px; margin-top: 8px; }

@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.4.0"
+  firmware_version: "0.5.0"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -539,6 +539,9 @@ interval:
   - interval: 20ms
     then:
       - lambda: |-
+          // Hold to repeat: only while the touch controller still reports a finger.
+          if (id(touch).get_touches().empty()) remote_ui::touch_released();
+          remote_ui::hold_tick(*remote_ui::actions());
           remote_ui::feedback_tick();   // clears the pad's pressed look
           if (id(epd).is_updating()) return;
           bool full = false;
@@ -595,7 +598,7 @@ image:
     url: http://127.0.0.1/
     format: AUTO
     type: GRAYSCALE
-    resize: 440x256      # the poster box (remote_ui::POSTER_W x POSTER_H)
+    resize: 98x146       # the artwork box (remote_ui::POSTER_W x POSTER_H)
     update_interval: never
     on_download_finished:
       - lambda: 'sticky::fallback_done(true);'
@@ -614,6 +617,8 @@ touchscreen:
       swap_xy: ${touch_swap_xy}
       mirror_x: ${touch_mirror_x}
       mirror_y: ${touch_mirror_y}
+    on_release:
+      - lambda: 'remote_ui::touch_released();'
     on_touch:
       - lambda: |-
           const uint32_t now_ms = millis();
@@ -687,8 +692,8 @@ font:
   - file: fonts/materialdesignicons-webfont.ttf
     id: i40
     size: 40
-    # vol -, vol +, power, sleep, back, tv, movie, play-pause
-    glyphs: ["\U000F075E", "\U000F075D", "\U000F0425", "\U000F04B2", "\U000F17B3", "\U000F0502", "\U000F0FCF", "\U000F040E"]
+    # vol -, vol +, power, sleep, back, tv, movie, play-pause, rewind-10, fast-forward-10
+    glyphs: ["\U000F075E", "\U000F075D", "\U000F0425", "\U000F04B2", "\U000F17B3", "\U000F0502", "\U000F0FCF", "\U000F040E", "\U000F0D2A", "\U000F0D71"]
   - file: fonts/materialdesignicons-webfont.ttf
     id: i52
     size: 52

@@ -460,7 +460,7 @@ inline void poster_poll() {
     L.w = w;
     L.h = h;
     m.poster_loaded = true;
-    remote_ui::request(true);
+    remote_ui::request_big();   // partial now; cleaned once the Sticky is left alone
     return;
   }
   free(px);
@@ -478,7 +478,7 @@ inline void poster_poll() {
 inline void fallback_done(bool ok) {
   if (!loader().fallback) return;
   remote_ui::model().poster_loaded = ok && !remote_ui::model().picture.empty();
-  remote_ui::request(ok);
+  if (ok) remote_ui::request_big(); else remote_ui::request();
 }
 
 /// The artwork to draw.

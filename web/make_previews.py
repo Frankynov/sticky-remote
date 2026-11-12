@@ -51,21 +51,21 @@ raw.write_bytes(poster.tobytes())
 common = ["online 1", "battery 78", "volume 0.4", "light0_state on", "light0_brightness 158",
           "light1_state off", "light_icon0 floor", "light_icon1 ceiling", "light_count 2"]
 
-# Welcome: a film playing, then the Remote page (Inter).
-p, cmd = engine("inter")
-cmd("labels Living room|Floor lamp|Ceiling|Open Infuse|Apple TV")
-# Same order as Home Assistant sends them: state, app, then the details.
-for c in common + ["atv_state playing", "app Infuse", "title The Long Night", "position 3734",
-                   "duration 8040", "position_at 2026-10-26T18:00:00+00:00", "picture night"]:
-    cmd("set " + c)
-cmd(f"poster {raw} {poster.width} {poster.height}")
-cmd("tap 352 201 1793000000")               # Now playing tab (the Sticky starts on Remote)
-frame(cmd, "welcome-now")
-cmd("tap 120 201 1793000000")               # Remote tab
-frame(cmd, "welcome-remote")
-p.kill()
+# Welcome: the Sticky while a film plays, and when nothing plays (Inter).
+for name, extra, with_poster in (
+        ("welcome-now", ["atv_state playing", "app Infuse", "title The Long Night", "position 3734", "duration 8040",
+                         "position_at 2026-10-26T18:00:00+00:00", "picture night"], True),
+        ("welcome-remote", ["atv_state idle", "app Infuse"], False)):
+    p, cmd = engine("inter")
+    cmd("labels Living room|Floor lamp|Ceiling|Open Infuse|Apple TV")
+    for c in common + extra:   # the state and the app first, as Home Assistant sends them
+        cmd("set " + c)
+    if with_poster:
+        cmd(f"poster {raw} {poster.width} {poster.height}")
+    frame(cmd, name)
+    p.kill()
 
-# The Remote page, top row left blank, for each typeface.
+# The screen with its top row left blank, for each typeface.
 for font_set in ("inter", "trmnl"):
     p, cmd = engine(font_set)
     cmd("labels |||Open app|Player")

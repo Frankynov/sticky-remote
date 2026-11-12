@@ -165,7 +165,7 @@ void sc_set_poster(const uint8_t *gray, int w, int h) {
     g_poster.set(gray, w, h);
     remote_ui::model().poster_loaded = true;  // on_download_finished
   }
-  remote_ui::request(true);
+  remote_ui::request_big();
 }
 
 int sc_tap(int x, int y, int64_t now, sc_call_fn fn, void *ctx) {
@@ -178,6 +178,14 @@ int sc_touch(int rx, int ry, int64_t now, sc_call_fn fn, void *ctx) {
   g_actions.fn = fn;
   g_actions.ctx = ctx;
   return (int) remote_ui::handle_touch(rx, ry, rx, ry, now, g_actions);
+}
+
+void sc_release(void) { remote_ui::touch_released(); }
+
+void sc_hold_tick(sc_call_fn fn, void *ctx) {
+  g_actions.fn = fn;
+  g_actions.ctx = ctx;
+  remote_ui::hold_tick(g_actions);
 }
 
 void sc_calibrate(void) {

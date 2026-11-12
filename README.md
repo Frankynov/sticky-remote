@@ -19,13 +19,11 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 | Area | What it does | Home Assistant |
 |---|---|---|
 | Top tiles | One or two lights (toggle, brightness) and the player's power | `light.toggle`, `media_player.turn_on/off` |
-| Tabs | "Remote", the everyday page, and "Now playing". Starting a film doesn't switch pages | — |
-| Remote pad | ↑ ↓ ← → and OK, with on-screen feedback | `remote.send_command` up/down/left/right/select |
-| Remote keys | Back, Home, the app button (e.g. Infuse), Play/Pause | `remote.send_command` menu/home, `select_source`, `media_play_pause` |
-| Playing strip | On the Remote page: −10 s, the title and position, +10 s. Tap the title for Now playing | `media_seek` |
-| Now playing | Artwork (dithered; posters and wide stills both fit), title, series/episode or artist, app | `media_player` attributes |
-| Seek bar | Playing/Paused and the position; tap anywhere to jump there | `media_player.media_seek` |
-| Transport | −10 s, play/pause, +10 s | `media_seek`, `media_play_pause` |
+| Pad | ↑ ↓ ← → and OK, with on-screen feedback. Hold an arrow to repeat it | `remote.send_command` up/down/left/right/select |
+| Keys | Back, Home, the app button (e.g. Infuse), Play/Pause | `remote.send_command` menu/home, `select_source`, `media_play_pause` |
+| What's playing | A small artwork (dithered), title, series/episode or artist, app | `media_player` attributes |
+| Seek bar | The position; tap anywhere on it to jump there | `media_player.media_seek` |
+| Skip | −10 s and +10 s | `media_seek` |
 | Idle / off | "Open Infuse" / "Turn on" | `select_source`, `turn_on` |
 | Volume | − / + and a 10-step level | `media_player.volume_down/up` |
 | Buttons | AI = play/pause (hold 1.5 s to sleep), Up/Down = volume | same |
@@ -37,9 +35,9 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 - **Onboarding on the device.** A fresh Sticky opens an open `Sticky-Remote`
   hotspot and shows a QR code to join it. Then it shows how to add it to Home
   Assistant.
-- **Partial refreshes** for taps and state changes. Full refreshes happen when
-  the screen changes between playing, idle and off, when new artwork arrives,
-  and every 20 partials.
+- **One page, no tabs.** Everything is on screen at once, so nothing you do
+  needs more than a fast partial refresh. The full refresh that clears
+  e-paper ghosting waits until the Sticky has been left alone for 3 seconds.
 - **Battery**: deep sleep after 3 minutes on battery; any button wakes it.
 - **Touch sound**: Off, Quiet (default) or Normal, from the setup page or the
   Sticky's device page in Home Assistant (a `select` under Configuration).
@@ -49,9 +47,11 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 
 ## The setup page
 
-- **First time**: Connect, Install, Wi-Fi (networks the Sticky sees; the page
-  checks that it joins before moving on), Home Assistant, Your remote (with a
-  live picture of the result), Send, Add to Home Assistant, Test.
+- **First time**, five steps that move on by themselves: connect and install,
+  Wi-Fi (networks the Sticky sees; the page checks that it joins), Home
+  Assistant, Your remote (a live picture of the result; its button saves),
+  then a checklist that ticks itself while you add the Sticky to Home
+  Assistant and press a tile to try it.
 - **A Sticky that's already set up** gets a short menu instead: update it,
   change what it controls, move it to another Wi-Fi, or start from scratch.
   Each runs only the steps it needs and keeps everything else.
@@ -197,7 +197,8 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 - ±10 s seeks from the live position. Without one it falls back to
   `remote.send_command skip_forward/backward`.
 - Taps answer at once with the expected result, and HA's state update then
-  confirms or corrects it.
+  confirms or corrects it. A command leaves the moment the screen is touched;
+  the e-paper only shows it.
 
 ## License
 

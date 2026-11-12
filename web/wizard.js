@@ -1,27 +1,30 @@
-// Sticky Remote setup wizard: install the firmware, set Wi-Fi, pick the player
-// and lights from Home Assistant, send it all over USB, add the Sticky to HA.
-// Static page, no build step. ?demo runs it against a pretend Sticky and HA.
+// Sticky Remote setup: install the firmware, set Wi-Fi, pick the player and
+// lights from Home Assistant, add the Sticky to HA. Five steps; each moves on
+// by itself once its job is done. A Sticky that's already set up gets a short
+// menu instead. Static page, no build step. ?demo runs it against a pretend
+// Sticky and Home Assistant.
 
 import { StickySerial, flash, DemoSticky, demoFlash } from "./sticky-serial.js";
 import { HAClient, DemoHA } from "./ha.js";
 import { renderRemote, renderImage, drawIcon } from "./device-preview.js";
 
 // ?demo: pretend Sticky and pretend Home Assistant. ?demo=sticky: pretend
-// Sticky with your real Home Assistant (to try the HA steps before a Sticky arrives).
+// Sticky with your real Home Assistant. ?demo=update: the pretend Sticky
+// already runs an older, set-up Sticky Remote.
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
 const DEMO_HA = DEMO && DEMO_MODE !== "sticky";
-// ?demo=update: the demo Sticky already runs an older, set-up Sticky Remote.
-const STEPS = ["Welcome", "Connect", "Install", "Wi-Fi", "Home Assistant", "Your remote", "Send", "Add to Home Assistant", "Test", "Done"];
-const DONE = STEPS.length - 1;
+const STEPS = ["Your Sticky", "Wi-Fi", "Home Assistant", "Your remote", "Finish"];
+const WIFI = 1, HA = 2, REMOTE = 3, FINISH = 4;
 const ICONS = { bulb: "Bulb", ceiling: "Ceiling light", floor: "Floor lamp", star: "Star" };
 
 const S = {
   step: 0,
   manifest: null,
   port: null, serial: null, info: null,
-  install: true, eraseAll: true, installed: false,
   flow: "setup",          // setup | update | settings | wifi (what a set-up Sticky was plugged in for)
+  installPanel: false,    // step 1 shows the installer (a new Sticky, an update, a reset)
+  eraseAll: true, updated: false, finished: false,
   wifi: { ssid: "", pass: "", change: false, busy: false },
   ha: { url: localStorage.getItem("sticky.haURL") || "", remember: !!localStorage.getItem("sticky.haURL"),
         token: "", client: null, states: [], manual: false, location: "" },
@@ -31,7 +34,7 @@ const S = {
     room: "", ha_url: "", font_set: "inter", touch_sound: "quiet",
   },
   timers: [],
-  skipped: new Set(),   // steps this flow didn't need (shown with a dash)
+  skipped: new Set(),   // steps this visit doesn't need (shown with a dash)
   live: {},             // latest entity states from Home Assistant, for the previews
 };
 
@@ -43,18 +46,23 @@ const newer = (a, b) => { // is version a newer than b?
   for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
   return false;
 };
+const has = (cap) => !!S.info?.caps?.includes(cap);
 
 function stopTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function go(step) { stopTimers(); S.step = step; render(); window.scrollTo({ top: 0, behavior: "smooth" }); }
-// The next and previous steps this flow needs.
-function fwd() { let n = S.step + 1; while (n < DONE && S.skipped.has(n)) n++; go(n); }
-function back() { let n = S.step - 1; while (n > 1 && S.skipped.has(n)) n--; go(n); }
-const has = (cap) => !!S.info?.caps?.includes(cap);
+// The next and previous steps this visit needs.
+function fwd() {
+  if (S.flow === "wifi" && S.step === WIFI) return finish();   // moving networks ends there
+  let n = S.step + 1;
+  while (n < FINISH && S.skipped.has(n)) n++;
+  go(n);
+}
+function back() { let n = S.step - 1; while (n > 0 && S.skipped.has(n)) n--; go(n); }
 
 // --- Rendering -----------------------------------------------------------------------
 function render() {
   $("#step-list").innerHTML = STEPS.map((t, i) => {
-    const cls = i === S.step ? "current" : S.skipped.has(i) ? "skipped" : i < S.step ? "done" : "";
+    const cls = i === S.step ? (S.finished ? "done" : "current") : S.skipped.has(i) ? "skipped" : i < S.step ? "done" : "";
     return `<li class="${cls}"${cls === "skipped" ? ' title="Not needed this time"' : ""}>${esc(t)}</li>`;
   }).join("");
   const left = STEPS.filter((_, i) => !S.skipped.has(i));
@@ -66,9 +74,9 @@ function render() {
   view.bind?.();
 }
 
-const actions = (back, next, nextLabel = "Continue", nextDisabled = false) => `
+const actions = (hasBack, next, nextLabel = "Continue", nextDisabled = false) => `
   <div class="actions">
-    ${back ? `<button id="back">Back</button>` : ""}
+    ${hasBack ? `<button id="back">Back</button>` : ""}
     <span class="spacer"></span>
     ${next ? `<button class="primary" id="next" ${nextDisabled ? "disabled" : ""}>${esc(nextLabel)}</button>` : ""}
   </div>`;
@@ -76,65 +84,125 @@ function bindNav(onNext) {
   $("#back")?.addEventListener("click", back);
   $("#next")?.addEventListener("click", onNext || fwd);
 }
+const portRow = (primary) => `
+  <div class="actions" style="margin-top:0">
+    <button class="${primary ? "primary big" : ""}" id="pick">${S.port ? "Choose Another Port" : "Connect the Sticky"}</button>
+    <label><input type="checkbox" id="allports"> Show every port</label>
+  </div>
+  <p id="pick-status" class="note" hidden></p>`;
 
 const VIEWS = [
-  // 0 · Welcome
+  // 0 · Your Sticky: welcome and connect, then install, or the menu of a set-up Sticky.
   () => {
-    const ok = DEMO || "serial" in navigator;
-    return {
+    const i = S.info, fw = S.manifest?.version;
+    const update = i && fw && newer(fw, i.fw);
+    const bindPort = () => $("#pick")?.addEventListener("click", connect);
+
+    if (!S.port) {
+      const ok = DEMO || "serial" in navigator;
+      return {
+        html: `
+          <div class="welcome">
+            <div>
+              <h2>Set up your Sticky</h2>
+              <p class="lead">About five minutes. Plug the Sticky into this computer with a USB-C <b>data</b> cable, then connect it here. Its port is usually called “USB Single Serial” or “wchusbserial”.</p>
+              ${ok ? portRow(true) : `<p class="note bad">This browser can't reach USB devices. Open this page in Chrome or Edge on a computer.</p>`}
+              <h3>You'll also need</h3>
+              <ul>
+                <li>The Wi-Fi network for the Sticky (2.4 GHz).</li>
+                <li>Home Assistant, reachable over <b>https</b>, and a long-lived access token from an admin account (your profile › Security).</li>
+              </ul>
+              <details><summary>Your data stays yours</summary>
+                <ul class="privacy-list">
+                  <li><b>Wi-Fi password</b>: sent only to your Sticky, over the USB cable.</li>
+                  <li><b>Home Assistant token</b>: sent only to your Home Assistant, kept in memory and forgotten when you close this tab.</li>
+                  <li><b>Home Assistant address</b>: remembered in this browser only if you want, and you can forget it.</li>
+                  <li><b>This website</b> only serves the page and the firmware file. Nothing you type is sent to it or to its author. No analytics, no cookies, no third-party scripts: the page's security policy makes the browser block anything else.</li>
+                </ul></details>
+              ${DEMO ? "" : `<p><a href="?demo">Try the demo first (no Sticky needed)</a></p>`}
+            </div>
+            <div class="hero">
+              <figure><div class="device"><canvas id="hero-now" width="480" height="800" aria-label="The Sticky while a film plays"></canvas></div><figcaption>While a film plays</figcaption></figure>
+              <figure><div class="device"><canvas id="hero-remote" width="480" height="800" aria-label="The Sticky when nothing plays"></canvas></div><figcaption>Browsing</figcaption></figure>
+            </div>
+          </div>`,
+        bind: () => {
+          bindPort();
+          renderImage($("#hero-now"), "welcome-now");
+          renderImage($("#hero-remote"), "welcome-remote");
+        },
+      };
+    }
+
+    if (S.updated) return {
       html: `
-        <div class="hero">
-          <figure><div class="device"><canvas id="hero-remote" width="480" height="800" aria-label="The Sticky's remote page"></canvas></div><figcaption>Remote</figcaption></figure>
-          <figure><div class="device"><canvas id="hero-now" width="480" height="800" aria-label="The Sticky playing a film"></canvas></div><figcaption>Now playing</figcaption></figure>
-        </div>
-        <h2>Set up your Sticky</h2>
-        <p class="lead">About five minutes. This page installs Sticky Remote on a Seeed reTerminal Sticky, connects it to your Wi-Fi and lets you choose what it controls in Home Assistant.</p>
-        <h3>You'll need</h3>
-        <ul>
-          <li>The Sticky and a USB-C <b>data</b> cable (some cables only charge).</li>
-          <li>Chrome or Edge on a computer: they can talk to USB devices.</li>
-          <li>Home Assistant, reachable over <b>https</b>, and a long-lived access token from an admin account (your profile › Security).</li>
-          <li>The Wi-Fi network for the Sticky (2.4 GHz).</li>
-        </ul>
-        <h3>Your data stays yours</h3>
-        <ul class="privacy-list">
-          <li><b>Wi-Fi password</b>: sent only to your Sticky, over the USB cable.</li>
-          <li><b>Home Assistant token</b>: sent only to your Home Assistant, kept in memory and forgotten when you close this tab.</li>
-          <li><b>Home Assistant address</b>: remembered in this browser only if you want, and you can forget it.</li>
-          <li><b>This website</b> only serves the page and the firmware file. Nothing you type is sent to it or to its author. No analytics, no cookies, no third-party scripts: the page's security policy makes the browser block anything else.</li>
-        </ul>
-        ${ok ? "" : `<p class="note bad">This browser can't reach USB devices. Open this page in Chrome or Edge on a computer.</p>`}
-        <div class="actions">
-          ${DEMO ? "" : `<a class="button" href="?demo">Try the demo (no Sticky needed)</a>`}
-          <span class="spacer"></span>
-          <button class="primary" id="next" ${ok ? "" : "disabled"}>Start</button>
-        </div>`,
+        <h2>Updated</h2>
+        <p class="lead">Its Wi-Fi, settings and Home Assistant pairing were kept.</p>
+        ${updatedSummary()}
+        <div class="actions"><button id="change">Change Its Settings Too</button><span class="spacer"></span><button class="primary" id="finish">Done</button></div>`,
       bind: () => {
-        bindNav();
-        renderImage($("#hero-now"), "welcome-now");
-        renderImage($("#hero-remote"), "welcome-remote");
+        $("#change").addEventListener("click", () => startFlow("settings"));
+        $("#finish").addEventListener("click", () => finish());
+        if (!(S.info?.wifi?.connected && S.info?.ha?.connected)) {
+          S.timers.push(setInterval(async () => {
+            const n = await S.serial.info(1).catch(() => null);
+            if (!n) return;
+            S.info = n;
+            stopTimers();   // the re-render starts a new check while something is still missing
+            render();
+          }, 3000));
+        }
       },
     };
-  },
 
-  // 1 · Connect
-  () => {
-    const i = S.info;
-    const fw = S.manifest?.version;
-    const update = i && fw && newer(fw, i.fw);
-    let status = "", hub = false;
-    if (S.port && i?.configured) {
-      // A Sticky that's already set up: say what it is, and ask what to do with it.
-      hub = true;
-      const s = i.settings || {};
-      const choice = (flow, title, text, cls = "") => `<button class="choice ${cls}" data-flow="${flow}"><b>${title}</b><small>${text}</small></button>`;
-      status = `
+    if (S.installPanel) {
+      const fresh = !i;
+      return {
+        html: `
+          <h2>${fresh ? "Install Sticky Remote" : update ? `Update to ${esc(fw)}` : `Reinstall ${esc(fw)}`}</h2>
+          <p class="lead">${fresh ? `Connected. Sticky Remote ${esc(fw)} replaces the firmware on the Sticky.` : `${esc(i.name)} runs ${esc(i.fw)}.`} Keep the cable plugged in until it's done (about a minute).</p>
+          <details ${S.wasConfigured && S.eraseAll ? "open" : ""}><summary>Options</summary>
+            <label class="field"><input type="checkbox" id="erase" ${S.eraseAll ? "checked" : ""}> Erase everything first
+              <small>${S.wasConfigured
+                ? "Not needed for an update. Erasing removes its Wi-Fi, its settings and the key Home Assistant gave it: you'd go through the whole setup and add it to Home Assistant again."
+                : "Recommended the first time: clears the old firmware's data."}</small></label>
+          </details>
+          <p id="erase-warn" class="note warn" ${S.wasConfigured && S.eraseAll ? "" : "hidden"}>This Sticky is set up: erasing means setting it up again from scratch.</p>
+          <div class="progress"><div id="bar"></div></div>
+          <p id="phase" class="note">Ready.</p>
+          <div id="log" class="log" hidden></div>
+          <div class="actions">
+            <button id="unpick">${i?.configured ? "Back" : "Choose Another Port"}</button>
+            ${i && !i.configured ? `<button class="link" id="keepfw">Keep version ${esc(i.fw)}</button>` : ""}
+            <span class="spacer"></span><button class="primary" id="go">${fresh ? "Install" : update ? "Update" : "Reinstall"}</button>
+          </div>`,
+        bind: () => {
+          $("#erase").addEventListener("change", (e) => {
+            S.eraseAll = e.target.checked;
+            $("#erase-warn").hidden = !(S.wasConfigured && S.eraseAll);
+          });
+          $("#go").addEventListener("click", install);
+          $("#keepfw")?.addEventListener("click", () => { S.installPanel = false; fwd(); });
+          $("#unpick").addEventListener("click", () => {
+            if (i?.configured) { S.installPanel = false; return render(); }
+            S.serial?.close(); S.port = null; S.info = null; render();
+          });
+        },
+      };
+    }
+
+    // A Sticky that's already set up: say what it is, and ask what to do with it.
+    const st = i.settings || {};
+    const choice = (flow, title, text, cls = "") => `<button class="choice ${cls}" data-flow="${flow}"><b>${title}</b><small>${text}</small></button>`;
+    return {
+      html: `
+        <h2>Your Sticky</h2>
         <div class="found">
           <b>${esc(i.name)}</b>
           <span>Sticky Remote ${esc(i.fw)}</span>
           <span class="${i.wifi?.connected ? "good" : "off"}">${i.wifi?.connected ? `Wi-Fi: ${esc(i.wifi.ssid || "connected")}` : "Not on Wi-Fi"}</span>
           <span class="${i.ha?.connected ? "good" : "off"}">${i.ha?.connected ? "Home Assistant connected" : i.ha?.paired ? "Home Assistant not connected" : "Not added to Home Assistant"}</span>
-          <small>${esc([s.player, s.light1, s.light2].filter(Boolean).join(" · "))}</small>
+          <small>${esc([st.player, st.light1, st.light2].filter(Boolean).join(" · "))}</small>
         </div>
         <h3>What would you like to do?</h3>
         <div class="choices">
@@ -142,85 +210,16 @@ const VIEWS = [
           ${choice("settings", "Change what it controls", "Player, app button, lights, labels and icons, typeface, touch sound." + (update ? " Some options may need the update first." : ""))}
           ${choice("wifi", "Move it to another Wi-Fi", "Pick a network from the ones it sees and check that it joins.")}
           ${choice("reset", update ? "Erase and set up from scratch" : "Reinstall and set up from scratch", "Erases its Wi-Fi, settings and Home Assistant pairing, then runs the whole setup.", "quiet")}
-        </div>`;
-    } else if (S.port && i) {
-      status = `<p class="note">Found <b>${esc(i.name)}</b> running Sticky Remote ${esc(i.fw)}, not set up yet.${update ? ` Version ${esc(fw)} is available.` : ""}</p>
-        <label class="field"><input type="radio" name="inst" value="install" ${S.install ? "checked" : ""}> ${update ? "Update to" : "Reinstall"} ${esc(fw)}${update ? " (recommended)" : ""}</label>
-        <label class="field"><input type="radio" name="inst" value="keep" ${!S.install ? "checked" : ""}> Keep the installed firmware ${esc(i.fw)} and continue the setup</label>`;
-    } else if (S.port) {
-      status = `<p class="note">Connected. This Sticky doesn't run Sticky Remote yet (or didn't answer): the next step installs it.</p>`;
-    }
-    return {
-      html: `
-        <h2>${hub ? "Your Sticky" : "Connect the Sticky"}</h2>
-        ${hub ? "" : `<p class="lead">Plug the Sticky into this computer with its USB-C cable, then choose its port. It's usually called “USB Single Serial” or “wchusbserial”.</p>`}
-        ${status}
-        <div class="actions" ${hub ? "" : 'style="margin-top:0"'}>
-          <button class="${hub ? "" : "primary"}" id="pick">${S.port ? "Choose Another Port" : "Choose the Sticky's Port"}</button>
-          <label><input type="checkbox" id="allports"> Show every port</label>
         </div>
-        <p id="pick-status" class="note" hidden></p>
-        ${hub ? "" : actions(true, !!S.port, "Continue")}`,
+        ${portRow(false)}`,
       bind: () => {
-        $("#pick").addEventListener("click", connect);
-        document.querySelectorAll("input[name=inst]").forEach((r) =>
-          r.addEventListener("change", () => { S.install = r.value === "install"; }));
+        bindPort();
         document.querySelectorAll("[data-flow]").forEach((b) => b.addEventListener("click", () => startFlow(b.dataset.flow)));
-        bindNav(() => {
-          S.flow = "setup"; S.skipped.clear();
-          if (!S.install) S.skipped.add(2);
-          fwd();
-        });
       },
     };
   },
 
-  // 2 · Install
-  () => ({
-    html: `
-      <h2>${S.updated ? "Updated" : "Install the firmware"}</h2>
-      <p class="lead">${S.updated ? "Its Wi-Fi, settings and Home Assistant pairing were kept."
-        : `Sticky Remote ${esc(S.manifest?.version)} replaces the firmware on the Sticky. Keep the cable plugged in until it's done (about a minute).`}</p>
-      ${S.updated ? updatedSummary() : `
-      <label class="field"><input type="checkbox" id="erase" ${S.eraseAll ? "checked" : ""}> Erase everything first
-        <small>${S.wasConfigured
-          ? "Not needed for an update. Erasing removes its Wi-Fi, its settings and the key Home Assistant gave it: you'd go through the whole setup and add it to Home Assistant again."
-          : `Recommended the first time. Clears the old firmware's data${S.info ? ", and this Sticky's saved Wi-Fi and settings" : ""}.`}</small></label>
-      <p id="erase-warn" class="note warn" ${S.wasConfigured && S.eraseAll ? "" : "hidden"}>This Sticky is set up: erasing means setting it up again from scratch.</p>
-      <div class="progress"><div id="bar" style="width:${S.installed ? 100 : 0}%"></div></div>
-      <p id="phase" class="note">${S.installed ? "Installed." : "Ready."}</p>
-      <div id="log" class="log" hidden></div>`}
-      <div class="actions">
-        ${S.updated ? `<button id="change">Change Its Settings Too</button><span class="spacer"></span><button class="primary" id="finish">Done</button>`
-          : `<button id="back">Back</button><span class="spacer"></span>
-             ${S.installed ? `<button class="primary" id="next">Continue</button>` : `<button class="primary" id="go">Install</button>`}`}
-      </div>`,
-    bind: () => {
-      $("#erase")?.addEventListener("change", (e) => {
-        S.eraseAll = e.target.checked;
-        $("#erase-warn").hidden = !(S.wasConfigured && S.eraseAll);
-      });
-      $("#go")?.addEventListener("click", install);
-      $("#change")?.addEventListener("click", () => { S.updated = false; startFlow("settings"); });
-      if (S.updated && !(S.info?.wifi?.connected && S.info?.ha?.connected)) {
-        S.timers.push(setInterval(async () => {
-          const i = await S.serial.info(1).catch(() => null);
-          if (!i) return;
-          S.info = i;
-          stopTimers();   // the re-render starts a new check while something is still missing
-          render();
-        }, 3000));
-      }
-      $("#finish")?.addEventListener("click", () => {
-        stopTimers(); S.serial?.close();
-        for (let i = 3; i < DONE; i++) S.skipped.add(i);   // nothing else was needed
-        go(DONE);
-      });
-      bindNav();
-    },
-  }),
-
-  // 3 · Wi-Fi: pick a network the Sticky sees, and check right away that it joins.
+  // 1 · Wi-Fi: pick a network the Sticky sees, and check right away that it joins.
   () => {
     const i = S.info || {}, w = S.wifi;
     const connected = !!i.wifi?.connected;
@@ -242,7 +241,7 @@ const VIEWS = [
           ${connected ? `<button class="link" id="keep-wifi">Keep ${esc(i.wifi.ssid || "the current network")}</button>` : ""}</div>
         <ul class="checks" id="wifi-checks"></ul>`
         : `<p><button class="link" id="change-wifi">Use another network</button></p>`}
-        ${actions(true, true, S.flow === "wifi" ? "Finish" : "Continue", !connected || w.change)}`,
+        ${actions(true, connected && !w.change, S.flow === "wifi" ? "Finish" : "Continue")}`,
       bind: () => {
         bindNav();
         $("#change-wifi")?.addEventListener("click", () => { w.change = true; render(); });
@@ -262,7 +261,7 @@ const VIEWS = [
     };
   },
 
-  // 4 · Home Assistant
+  // 2 · Home Assistant
   () => {
     const h = S.ha;
     const connected = !!h.client;
@@ -283,7 +282,7 @@ const VIEWS = [
           <span id="hastatus" class="${h.error ? "note bad" : "note"}" ${h.error || connected ? "" : "hidden"}>${esc(h.error || (connected ? `Connected to ${h.location} · ${h.states.length} entities` : ""))}</span>
         </div>
         <p><button class="link" id="manual">${h.manual ? "Use Home Assistant's lists instead" : "Can't connect? Enter the entities by hand"}</button></p>
-        ${actions(true, true, "Continue", !connected && !h.manual)}`,
+        ${actions(true, connected || h.manual, "Continue")}`,
       bind: () => {
         $("#haurl").addEventListener("input", (e) => { h.url = e.target.value.trim(); h.client = null; });
         $("#token").addEventListener("input", (e) => { h.token = e.target.value.trim(); h.client = null; });
@@ -293,7 +292,12 @@ const VIEWS = [
           if (h.remember && h.url) localStorage.setItem("sticky.haURL", h.url);
           else localStorage.removeItem("sticky.haURL");
         });
-        $("#manual").addEventListener("click", () => { h.manual = !h.manual; h.error = ""; render(); });
+        $("#manual").addEventListener("click", () => {
+          h.manual = !h.manual; h.error = "";
+          if (!h.manual) return render();
+          if (!S.settings.ha_url) S.settings.ha_url = h.url.replace(/\/+$/, "");
+          fwd();
+        });
         bindNav(() => {
           if (!S.settings.ha_url) S.settings.ha_url = h.url.replace(/\/+$/, "");
           fwd();
@@ -302,7 +306,7 @@ const VIEWS = [
     };
   },
 
-  // 5 · Your remote: three short cards next to a live picture of the result.
+  // 3 · Your remote: three short cards next to a live picture of the result.
   () => {
     const s = S.settings;
     const manual = S.ha.manual || !S.ha.client;
@@ -372,7 +376,8 @@ const VIEWS = [
             <p class="device-note">Your Sticky, drawn as its firmware draws it${S.ha.client ? ", with your lights as they are now" : ""}.</p></aside>
         </div>
         <p id="remote-error" class="note bad" hidden></p>
-        ${actions(true, true, "Continue")}`,
+        <ul class="checks" id="send-checks"></ul>
+        ${actions(true, true, "Save to the Sticky")}`,
       bind: () => {
         const preview = () => renderRemote($("#remote-preview"), previewData());
         const ink = getComputedStyle(document.body).color;
@@ -418,154 +423,93 @@ const VIEWS = [
           if (!s.app_label && s.app) s.app_label = `Open ${s.app}`;
           if (!s.player_name) s.player_name = "Player";
           if (!s.remote) s.remote = "remote." + s.player.split(".")[1];
-          fwd();
+          $("#remote-error").hidden = true;
+          save();
         });
       },
     };
   },
 
-  // 6 · Send
+  // 4 · Finish: add it to Home Assistant and try it, as one live checklist; then the end.
   () => {
-    const s = S.settings;
-    return {
-      html: `
-        <h2>${S.flow === "settings" ? "Save to the Sticky" : "Send to the Sticky"}</h2>
-        <p class="lead">Everything goes over the cable. The Sticky saves it, restarts and comes back on Wi-Fi.</p>
-        <dl class="kv">
-          <dt>Wi-Fi</dt><dd>${esc(S.info?.wifi?.ssid || "as set")}</dd>
-          <dt>Player</dt><dd>${esc(s.player)}${s.app ? ` · opens ${esc(s.app)}` : ""}</dd>
-          <dt>Lights</dt><dd>${esc(s.light1_name)} (${esc(s.light1)})${s.light2 ? `, ${esc(s.light2_name)} (${esc(s.light2)})` : ""}</dd>
-          <dt>Look</dt><dd>${esc(s.room || "no room name")} · ${s.font_set === "trmnl" ? "TRMNL" : "Inter"}${has("touch_sound") ? ` · touch sound ${esc(s.touch_sound)}` : ""}</dd>
-        </dl>
-        <ul class="checks" id="send-checks"></ul>
-        <p id="send-error" class="note bad" hidden></p>
-        <div class="actions"><button id="back">Back</button><span class="spacer"></span>
-          <button class="primary" id="go">${S.flow === "settings" ? "Save" : "Send"}</button><button class="primary" id="next" hidden>Continue</button></div>`,
-      bind: () => { bindNav(); $("#go").addEventListener("click", send); },
-    };
-  },
+    const i = S.info || {}, s = S.settings;
+    const preview = `<aside class="device-col"><div class="device"><canvas id="final-preview" width="480" height="800" aria-label="Your Sticky"></canvas></div>
+        <p class="device-note">This is your Sticky${S.ha.client ? ", live from Home Assistant" : ""}.</p></aside>`;
+    const draw = () => { const c = $("#final-preview"); if (c) renderRemote(c, previewData(S.live)); };
+    const again = `<div class="actions"><span class="spacer"></span><button class="primary" id="again">Set Up Another Sticky</button></div>`;
+    const bindAgain = () => $("#again").addEventListener("click", () => location.reload());
 
-  // 7 · Add to Home Assistant
-  () => {
+    if (S.finished) {
+      const text = S.flow === "update" ? `${esc(i.name)} runs Sticky Remote ${esc(i.fw)}, with its Wi-Fi, settings and Home Assistant pairing kept.`
+        : S.flow === "wifi" ? `${esc(i.name)} is on <b>${esc(i.wifi?.ssid || "its new network")}</b>. Home Assistant finds it again by itself within a minute.`
+        : S.flow === "settings" ? "The Sticky restarted with its new settings."
+        : "On battery it sleeps after 3 minutes; any button wakes it. To change what it controls, or to update it, plug it in and open this page again.";
+      const withPreview = S.flow === "setup" || S.flow === "settings";
+      return {
+        html: `
+          <h2>${S.flow === "setup" ? "Your Sticky is ready" : "All done"}</h2>
+          <div class="${withPreview ? "with-device" : ""}"><div>
+            <p class="big-ok">✓</p>
+            <p class="lead">${text}</p>
+            <p>You can unplug it.</p>
+          </div>${withPreview ? preview : ""}</div>
+          ${again}`,
+        bind: () => { bindAgain(); draw(); S.serial?.close(); },
+      };
+    }
+
     const base = S.ha.url.replace(/\/+$/, "");
-    const link = (path, label) => base ? `<a class="button" href="${esc(base + path)}" target="_blank" rel="noopener">${label}</a>` : "";
+    const link = (path, label) => base ? `<p><a class="button" href="${esc(base + path)}" target="_blank" rel="noopener">${label}</a></p>` : "";
+    const light = esc(s.light1_name || "first light");
     return {
       html: `
         <h2>Add it to Home Assistant</h2>
-        <p class="lead">Home Assistant has found <b>${esc(S.info?.name || "the Sticky")}</b> on your network. Two clicks there:</p>
-        <ol>
-          <li><b>Settings › Devices & services</b>: under <i>Discovered</i>, click <b>Add</b> on the ESPHome card for ${esc(S.info?.name || "the Sticky")}. Home Assistant gives it its encryption key by itself.</li>
-          <li>Then open that device's <b>Configure</b> (⚙︎) and turn on <b>Allow the device to perform Home Assistant actions</b>. Without it, the Sticky can show your lights but can't switch them.</li>
-        </ol>
-        <div class="actions" style="margin-top:4px">${link("/config/integrations/dashboard", "Open Devices & services")}${link("/config/integrations/integration/esphome", "Open ESPHome devices")}</div>
-        <ul class="checks">
-          <li id="chk-added" class="wait">Waiting for Home Assistant to connect to the Sticky…</li>
-          <li id="chk-actions"><label><input type="checkbox" id="actions-ok"> I turned on “Allow the device to perform Home Assistant actions”</label></li>
-        </ul>
-        ${actions(true, true, "Continue", true)}`,
+        <p class="lead">Home Assistant has found <b>${esc(i.name || "the Sticky")}</b> on your network. This page follows along and ticks each step.</p>
+        <div class="with-device"><div>
+          <ol class="todo">
+            <li id="t-add" class="${i.ha?.connected ? "ok" : "now"}"><b>Add the Sticky</b>
+              <p>In <b>Settings › Devices & services</b>, under <i>Discovered</i>, click <b>Add</b> on the ESPHome card for ${esc(i.name || "the Sticky")}. Home Assistant gives it its encryption key by itself.</p>
+              ${link("/config/integrations/dashboard", "Open Devices & services")}</li>
+            <li id="t-allow"><b>Let it control things</b>
+              <p>Open that device's <b>Configure</b> (⚙︎) and turn on <b>Allow the device to perform Home Assistant actions</b>. Without it, the Sticky shows your lights but can't switch them.</p>
+              ${link("/config/integrations/integration/esphome", "Open ESPHome devices")}</li>
+            <li id="t-test"><b>Press the ${light} tile on the Sticky</b>
+              <p id="t-note">${S.ha.client ? "This page watches the light and finishes by itself when it changes." : "Did the light change?"}</p>
+              ${S.ha.client ? "" : `<p><button id="yes" class="primary">Yes, it changed</button></p>`}</li>
+          </ol>
+          <p id="t-hint" class="note" hidden>Pressed the tile and nothing happened? The switch in step 2 is the usual cause. Turn it on, then press the tile again.</p>
+        </div>${preview}</div>
+        <div class="actions"><button id="back">Back</button><span class="spacer"></span><button class="link" id="skip">Finish without testing</button></div>`,
       bind: () => {
         bindNav();
-        let added = false;
-        const update = () => { $("#next").disabled = !(added && $("#actions-ok").checked); };
-        $("#actions-ok").addEventListener("change", update);
+        draw();
+        const mark = (id, cls) => { $(id).className = cls; };
+        const added = () => { mark("#t-add", "ok"); if ($("#t-allow").className !== "ok") mark("#t-allow", "now"); mark("#t-test", "now"); };
+        if (i.ha?.connected) added();
+        $("#skip").addEventListener("click", () => finish());
+        $("#yes")?.addEventListener("click", () => finish());
         if (DEMO) S.serial.pretendAdded?.();
         S.timers.push(setInterval(async () => {
-          const i = await S.serial.info(1).catch(() => null);
-          if (!i) return;
-          S.info = i;
-          if (i.ha?.connected && !added) {
-            added = true;
-            $("#chk-added").className = "ok";
-            $("#chk-added").textContent = "Home Assistant is connected to the Sticky.";
-            update();
+          const n = await S.serial.info(1).catch(() => null);
+          if (!n || S.finished || !$("#t-add")) return;   // answered after the page moved on
+          S.info = n;
+          if (n.ha?.connected && $("#t-add").className !== "ok") {
+            added();
+            setTimeout(() => { const h = $("#t-hint"); if (h) h.hidden = false; }, 45000);
           }
         }, 2500));
-      },
-    };
-  },
-
-  // 8 · Test
-  () => ({
-    html: `
-      <h2>Try it</h2>
-      <div class="with-device"><div>
-      <p class="lead">Press the <b>${esc(S.settings.light1_name || "first light")}</b> tile on the Sticky.</p>
-      <ul class="checks"><li id="chk-light" class="wait">${S.ha.client ? "Watching the light in Home Assistant…" : "Did the light change?"}</li></ul>
-      </div>
-      <aside class="device-col"><div class="device"><canvas id="final-preview" width="480" height="800" aria-label="Your Sticky"></canvas></div>
-        <p class="device-note">This is your Sticky${S.ha.client ? ", live from Home Assistant" : ""}.</p></aside>
-      </div>
-      <div class="actions"><button id="back">Back</button><span class="spacer"></span>
-        ${S.ha.client ? "" : `<button id="no">No</button><button class="primary" id="yes">Yes, it changed</button>`}
-        <button class="primary" id="next" hidden>Finish</button></div>`,
-    bind: () => {
-      bindNav();
-      const ok = () => {
-        if (S.step !== DONE - 1) return;
-        $("#chk-light").className = "ok";
-        $("#chk-light").textContent = `${S.settings.light1_name || "The light"} changed: the Sticky works.`;
-        $("#next").hidden = false;
-        $("#yes")?.remove(); $("#no")?.remove();
-        S.serial?.close();
-      };
-      $("#yes")?.addEventListener("click", ok);
-      $("#no")?.addEventListener("click", () => {
-        $("#chk-light").className = "bad";
-        $("#chk-light").innerHTML = `Nothing happened. Check that <b>Allow the device to perform Home Assistant actions</b> is on for this Sticky in Home Assistant, then press the tile again.`;
-      });
-      // Redraws whichever "Your Sticky" preview is on screen (here, then on Done).
-      const draw = () => { const c = $("#final-preview"); if (c) renderRemote(c, previewData(S.live)); };
-      draw();
-      if (S.ha.client && !S.watching) {
-        S.watching = true;
-        let first = null;
-        const ids = [S.settings.light1, S.settings.light2, S.settings.player].filter(Boolean);
-        S.ha.client.watch(ids, (id, e) => {
-          S.live[id] = e;
-          draw();
-          if (id !== S.settings.light1) return;
-          if (first === null) { first = e.state; return; }   // the state before the press
-          if (e.state !== first) ok();
-        }).catch(() => {});
-      }
-    },
-  }),
-
-  // 9 · Done
-  () => {
-    const i = S.info || {};
-    if (S.updated) return {
-      html: `
-        <h2>All done</h2>
-        <p class="lead">${esc(i.name)} runs Sticky Remote ${esc(i.fw)}, with its Wi-Fi, settings and Home Assistant pairing kept.</p>
-        <p class="big-ok">✓</p>
-        <p>You can unplug it.</p>
-        <div class="actions"><span class="spacer"></span><button class="primary" id="again">Set Up Another Sticky</button></div>`,
-      bind: () => $("#again").addEventListener("click", () => location.reload()),
-    };
-    if (S.flow === "wifi") return {
-      html: `
-        <h2>All done</h2>
-        <p class="big-ok">✓</p>
-        <p class="lead">${esc(i.name)} is on <b>${esc(i.wifi?.ssid || "its new network")}</b>. Home Assistant finds it again by itself within a minute. You can unplug it.</p>
-        <div class="actions"><span class="spacer"></span><button class="primary" id="again">Back to the Start</button></div>`,
-      bind: () => $("#again").addEventListener("click", () => location.reload()),
-    };
-    return {
-      html: `
-        <h2>${S.flow === "settings" ? "Saved" : "Your Sticky is ready"}</h2>
-        <div class="with-device"><div>
-          <p class="big-ok">✓</p>
-          <p>You can unplug it. On battery it sleeps after 3 minutes; any button wakes it.</p>
-          <p>To change what it controls, or to update it later, plug it in and open this page again: an update keeps everything.</p>
-        </div>
-        <aside class="device-col"><div class="device"><canvas id="final-preview" width="480" height="800" aria-label="Your Sticky"></canvas></div>
-          <p class="device-note">This is your Sticky${S.ha.client ? ", live from Home Assistant" : ""}.</p></aside>
-        </div>
-        <div class="actions"><span class="spacer"></span><button class="primary" id="again">Set Up Another Sticky</button></div>`,
-      bind: () => {
-        $("#again").addEventListener("click", () => location.reload());
-        renderRemote($("#final-preview"), previewData(S.live));
+        if (S.ha.client && !S.watching) {
+          S.watching = true;
+          let first = null;
+          const ids = [s.light1, s.light2, s.player].filter(Boolean);
+          S.ha.client.watch(ids, (id, e) => {
+            S.live[id] = e;
+            draw();
+            if (id !== s.light1) return;
+            if (first === null) { first = e.state; return; }   // the state before the press
+            if (e.state !== first && S.step === FINISH && !S.finished) finish();   // it works: actions are allowed
+          }).catch(() => {});
+        }
       },
     };
   },
@@ -685,7 +629,7 @@ async function joinWifi() {
       return watchNetworks();
     }
     w.busy = false; w.change = false; w.pass = "";
-    render();
+    fwd();   // joined: straight to the next step
   } catch (e) {
     item("w9", esc(String(e?.message || e)), "bad");
     lock(false);
@@ -695,18 +639,29 @@ async function joinWifi() {
 // A set-up Sticky was plugged in: which steps does this visit need?
 function startFlow(flow) {
   S.skipped.clear();
-  S.updated = false;
+  S.updated = false; S.finished = false;
   S.wifi.change = false;
-  const paired = !!S.info?.ha?.paired;
-  if (flow === "update") { S.flow = "update"; S.install = true; S.eraseAll = false; return go(2); }
-  if (flow === "reset") { S.flow = "setup"; S.install = true; S.eraseAll = true; return go(2); }
+  if (flow === "update" || flow === "reset") {
+    S.flow = flow === "update" ? "update" : "setup";
+    S.eraseAll = flow === "reset";
+    S.installPanel = true;
+    return render();
+  }
   S.flow = flow;
-  S.install = false;
-  if (flow === "wifi") { for (const n of [2, 4, 5, 6, 7, 8]) S.skipped.add(n); S.wifi.change = true; return go(3); }
-  // settings: Home Assistant (for its lists), Your remote, Save. Pairing steps only if it never was added.
-  for (const n of [2, 3]) S.skipped.add(n);
-  if (paired) { S.skipped.add(7); S.skipped.add(8); }
-  go(4);
+  S.installPanel = false;
+  if (flow === "wifi") { S.skipped.add(HA); S.skipped.add(REMOTE); S.wifi.change = true; return go(WIFI); }
+  S.skipped.add(WIFI);   // settings: Home Assistant (for its lists), then Your remote
+  go(HA);
+}
+
+// The end of a visit: the last step, showing its summary.
+function finish() {
+  stopTimers();
+  S.finished = true;
+  for (let n = S.step + 1; n < FINISH; n++) S.skipped.add(n);
+  S.step = FINISH;
+  render();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 // A likely icon from the light's name.
@@ -740,13 +695,16 @@ async function connect() {
     }
     status.hidden = false; status.className = "note"; status.textContent = "Asking the Sticky…";
     S.info = await S.serial.info(3);
-    S.install = !S.info || newer(S.manifest?.version, S.info.fw);
-    S.eraseAll = !S.info;
-    S.wasConfigured = !!S.info?.configured;
-    S.updated = false;
+    const i = S.info;
+    S.wasConfigured = !!i?.configured;
+    S.eraseAll = !i;
+    S.updated = false; S.finished = false;
     S.flow = "setup"; S.skipped.clear(); S.wifi.change = false;
-    if (S.info?.settings) Object.assign(S.settings, Object.fromEntries(
-      Object.entries(S.info.settings).filter(([, v]) => v !== "")));
+    if (i?.settings) Object.assign(S.settings, Object.fromEntries(Object.entries(i.settings).filter(([, v]) => v !== "")));
+    // No Sticky Remote yet, or an older one that isn't set up: the installer.
+    // Up to date and not set up: straight on. Set up: its menu.
+    S.installPanel = !i || (!i.configured && newer(S.manifest?.version, i.fw));
+    if (i && !i.configured && !S.installPanel) return fwd();
     render();
   } catch (e) {
     if (e?.name === "NotFoundError") return; // the user closed the port picker
@@ -758,8 +716,10 @@ async function connect() {
 async function install() {
   const bar = $("#bar"), phase = $("#phase"), log = $("#log");
   const addLog = (l) => { log.hidden = false; log.textContent += l.trimEnd() + "\n"; log.scrollTop = log.scrollHeight; };
-  $("#go").disabled = true; $("#back").disabled = true;
+  const lock = (on) => { for (const id of ["go", "unpick", "keepfw", "erase"]) { const el = document.getElementById(id); if (el) el.disabled = on; } };
+  lock(true);
   try {
+    phase.className = "note";
     phase.textContent = "Downloading the firmware…";
     const data = DEMO ? null : new Uint8Array(await (await fetch(`firmware/${S.manifest.file}`)).arrayBuffer());
     if (data && S.manifest.size && data.length !== S.manifest.size) throw new Error("The firmware download is incomplete. Reload the page and try again.");
@@ -772,17 +732,17 @@ async function install() {
     if (DEMO) { S.serial.finishFlash(S.manifest.version, S.eraseAll); }
     else { S.serial = new StickySerial(S.port); await S.serial.open(); }
     S.info = await S.serial.waitForBoard(30000);
-    if (!S.info) throw new Error("The Sticky didn't answer after installing. Unplug it, plug it back in, and choose its port again (step 2).");
-    S.installed = true;
-    // An update that kept everything: nothing else to do.
+    if (!S.info) throw new Error("The Sticky didn't answer after installing. Unplug it, plug it back in, and connect it again.");
+    S.installPanel = false;
+    // An update that kept everything: nothing else to do. Otherwise, on with the setup.
     S.updated = S.wasConfigured && !S.eraseAll && !!S.info.configured;
-    phase.textContent = `Installed Sticky Remote ${S.info.fw} on ${S.info.name}.`;
-    render();
+    if (S.updated) return render();
+    S.flow = "setup"; S.skipped.clear();
+    fwd();
   } catch (e) {
     phase.className = "note bad";
     phase.textContent = String(e?.message || e);
-    $("#back").disabled = false;
-    $("#go").disabled = false;
+    lock(false);
   }
 }
 
@@ -802,6 +762,8 @@ async function connectHA() {
     h.manual = false;
     if (DEMO_HA && !h.url) h.url = "https://demo.home-assistant.invalid";
     if (h.remember && !DEMO_HA) localStorage.setItem("sticky.haURL", h.url);
+    if (!S.settings.ha_url) S.settings.ha_url = h.url.replace(/\/+$/, "");
+    return fwd();   // connected: straight to the next step
   } catch (e) {
     h.client = null;
     h.error = String(e?.message || e);
@@ -809,38 +771,35 @@ async function connectHA() {
   render();
 }
 
-async function send() {
-  const checks = $("#send-checks"), err = $("#send-error");
+// Saves the choices on the Sticky (from Your remote) and moves on once it's back.
+async function save() {
+  const checks = $("#send-checks");
   const item = (id, text, cls = "wait") => {
     let li = document.getElementById(id);
     if (!li) { li = document.createElement("li"); li.id = id; checks.append(li); }
     li.className = cls; li.innerHTML = text;
   };
-  $("#go").disabled = true; $("#back").disabled = true; err.hidden = true;
+  const lock = (on) => { $("#next").disabled = on; $("#back").disabled = on; };
+  checks.innerHTML = "";
+  lock(true);
   try {
-    item("c1", "Sending…");
-    await S.serial.set({ settings: S.settings });   // Wi-Fi was set and checked at its own step
+    item("c1", "Saving on the Sticky…");
+    await S.serial.set({ settings: S.settings });
     item("c1", "Saved on the Sticky.", "ok");
-    item("c2", "Restarting…");
+    item("c2", "Restarting with the new settings…");
     await sleep(1500);
-    const back = await S.serial.waitForBoard(25000);
-    if (!back) throw new Error("The Sticky didn't come back after restarting. Check the cable, then send again.");
-    item("c2", "Restarted with the new settings.", "ok");
-    item("c3", "Coming back on Wi-Fi…");
-    let info = back;
+    let info = await S.serial.waitForBoard(25000);
+    if (!info) throw new Error("The Sticky didn't come back after restarting. Check the cable, then save again.");
     const end = Date.now() + 45000;
     while (!info?.wifi?.connected && Date.now() < end) { await sleep(2000); info = await S.serial.info(1) || info; }
     S.info = info;
-    if (!info?.wifi?.connected) {
-      item("c3", "Saved, but the Sticky isn't back on Wi-Fi yet. Go back to the Wi-Fi step to check its network.", "bad");
-      $("#back").disabled = false;
-      return;
-    }
-    item("c3", `On Wi-Fi: ${esc(info.wifi.ssid || "")} · ${esc(info.wifi.ip)}`, "ok");
-    $("#go").hidden = true; $("#next").hidden = false; $("#back").disabled = false;
+    if (!info.wifi?.connected) throw new Error("Saved, but the Sticky isn't back on Wi-Fi yet. Go back to the Wi-Fi step to check its network.");
+    // Already added to Home Assistant (a settings change): that's all. Otherwise, the last step.
+    if (info.ha?.paired) return finish();
+    go(FINISH);
   } catch (e) {
-    err.hidden = false; err.textContent = String(e?.message || e);
-    $("#back").disabled = false; $("#go").disabled = false;
+    item("c9", esc(String(e?.message || e)), "bad");
+    lock(false);
   }
 }
 

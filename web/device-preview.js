@@ -9,7 +9,7 @@
 
 const W = 480, H = 800, M = 14, STATUS_H = 36;
 const TILE_Y = 42, TILE_H = 124, TILE_GAP = 16;
-const KEY_Y = 550, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
+const KEY_Y = 488, KEY_H = 70, KEY_W = 104, KEY_GAP = 12;
 const ROLES = ["t18", "t20", "t22", "t26", "t30", "i24", "i40", "i52", "i64", "i120"];
 const ICON = {
   bulb_on: 0xf0335, bulb_off: 0xf0336, ceiling_on: 0xf0769, ceiling_off: 0xf17c7,
@@ -194,7 +194,7 @@ export async function renderRemote(canvas, d) {
   const n = d.lights.length + 1;
   d.lights.forEach((l, i) => drawTile(s, fonts, i, n, l.label || "", `${l.icon || "bulb"}_${l.on ? "on" : "off"}`, lightState(l), l.on));
   drawTile(s, fonts, n - 1, n, d.player.label || "Player", "power", d.player.on ? "On" : "Off", d.player.on);
-  // The app key (third key of the Remote page), drawn as draw_remote does.
+  // The app key (third key under the pad), drawn as draw_remote does.
   const kx = M + 2 * (KEY_W + KEY_GAP);
   s.rect(kx, KEY_Y, KEY_W, KEY_H, PAPER);
   s.strokeRrect(kx, KEY_Y, KEY_W, KEY_H, 16, 3);

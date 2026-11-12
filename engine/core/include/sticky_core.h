@@ -47,6 +47,10 @@ void sc_button(int button, int64_t now_epoch, sc_call_fn fn, void *context);
 /// A touch in the chip's raw coordinates (with no ESPHome transform, raw = panel
 /// coordinates). Goes through the saved touch calibration, or the calibration screen.
 int sc_touch(int raw_x, int raw_y, int64_t now_epoch, sc_call_fn fn, void *context);
+/// The finger left the screen (ends hold-to-repeat), and the firmware's 20 ms
+/// tick that repeats a held arrow or volume end.
+void sc_release(void);
+void sc_hold_tick(sc_call_fn fn, void *context);
 /// Shows the touch calibration screen (the firmware: hold Down for 3 s).
 void sc_calibrate(void);
 /// The saved calibration's map (ax bx cx ay by cy); returns 1 if there is one.
