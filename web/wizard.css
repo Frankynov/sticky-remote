@@ -22,6 +22,10 @@ a { color: var(--accent); }
 .top h1 { margin: 0; font-size: 21px; }
 .top p { margin: 2px 0 0; color: var(--mute); }
 .top-in > div { flex: 1; min-width: 220px; }
+.top .source { margin-left: auto; color: var(--mute); font-size: 14px; text-decoration: none; border: 1px solid var(--line);
+               padding: 6px 12px; border-radius: 20px; white-space: nowrap; }
+.top .source:hover { color: var(--ink); border-color: var(--mute); }
+.demo-badge:not([hidden]) + .source { margin-left: 0; }
 .demo-badge { margin-left: auto; background: var(--warn); color: #fff; padding: 4px 10px; border-radius: 20px; font-size: 13px; font-weight: 600; }
 
 .layout { display: grid; grid-template-columns: clamp(200px, 18vw, 260px) minmax(0, 1fr); gap: clamp(16px, 2.4vw, 36px);
