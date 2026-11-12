@@ -117,6 +117,9 @@ input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1p
 .found span { font-size: 13px; padding: 2px 9px; border-radius: 20px; border: 1px solid var(--line); color: var(--mute); }
 .found span.good { color: var(--ok); border-color: currentColor; }
 .found span.off { color: var(--warn); border-color: currentColor; }
+.found span.wait { color: var(--accent); border-color: currentColor; }
+.found span.wait::before { content: "◌"; display: inline-block; margin-right: 5px; animation: spin 1s linear infinite; }
+#found-status { display: contents; }
 .found small { flex-basis: 100%; color: var(--mute); word-break: break-all; }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .choice { text-align: left; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }

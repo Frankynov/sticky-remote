@@ -200,8 +200,7 @@ const VIEWS = [
         <div class="found">
           <b>${esc(i.name)}</b>
           <span>Sticky Remote ${esc(i.fw)}</span>
-          <span class="${i.wifi?.connected ? "good" : "off"}">${i.wifi?.connected ? `Wi-Fi: ${esc(i.wifi.ssid || "connected")}` : "Not on Wi-Fi"}</span>
-          <span class="${i.ha?.connected ? "good" : "off"}">${i.ha?.connected ? "Home Assistant connected" : i.ha?.paired ? "Home Assistant not connected" : "Not added to Home Assistant"}</span>
+          <span id="found-status">${statusBadges(i)}</span>
           <small>${esc([st.player, st.light1, st.light2].filter(Boolean).join(" · "))}</small>
         </div>
         <h3>What would you like to do?</h3>
@@ -215,6 +214,15 @@ const VIEWS = [
       bind: () => {
         bindPort();
         document.querySelectorAll("[data-flow]").forEach((b) => b.addEventListener("click", () => startFlow(b.dataset.flow)));
+        // Opening the port often restarts the Sticky, so its first answer comes
+        // before it's back on Wi-Fi: keep asking while this menu is open.
+        S.timers.push(setInterval(async () => {
+          const n = await S.serial.info(1).catch(() => null);
+          const box = $("#found-status");
+          if (!box) return;
+          if (n) S.info = n;
+          box.innerHTML = statusBadges(S.info);
+        }, 2500));
       },
     };
   },
@@ -337,6 +345,8 @@ const VIEWS = [
       html: `
         <h2>Your remote</h2>
         <p class="lead">Choose what the Sticky controls. The picture shows the result as you go${S.flow === "settings" ? "" : ", and you can change it later from this page"}.</p>
+        ${!S.ha.client && S.flow === "settings" ? `<p class="note">Showing what the Sticky uses now. Names, icons, typeface, sound and sleep can be changed here directly.
+          To pick other entities from your lists, <button class="link" id="use-ha">connect Home Assistant</button>, or type their ids.</p>` : ""}
         ${S.flow === "settings" && S.manifest?.version && newer(S.manifest.version, S.info?.fw) && !has("touch_sound")
           ? `<p class="note warn">This Sticky runs ${esc(S.info.fw)}. Some options here (touch sound) need version ${esc(S.manifest.version)}: update it first to use them.</p>` : ""}
         <div class="with-device">
@@ -399,6 +409,7 @@ const VIEWS = [
           sleepHint();
           preview();
         }));
+        $("#use-ha")?.addEventListener("click", () => { S.skipped.delete(HA); go(HA); });
         $("#add-light")?.addEventListener("click", () => { S.twoLights = true; render(); });
         $("#drop-light")?.addEventListener("click", () => { S.twoLights = false; s.light2 = ""; s.light2_name = ""; render(); });
         document.querySelectorAll("[data-k]").forEach((el) => {
@@ -649,6 +660,19 @@ async function joinWifi() {
   }
 }
 
+// Wi-Fi and Home Assistant badges for a set-up Sticky. For a minute after the
+// port opened (which may have restarted it), "not yet" reads as "connecting".
+function statusBadges(i) {
+  const fresh = Date.now() - (S.connectedAt || 0) < 60000;
+  const badge = (cls, text) => `<span class="${cls}">${text}</span>`;
+  const wifi = i?.wifi?.connected ? badge("good", `Wi-Fi: ${esc(i.wifi.ssid || "connected")}`)
+    : fresh ? badge("wait", "Joining Wi-Fi…") : badge("off", "Not on Wi-Fi");
+  const ha = i?.ha?.connected ? badge("good", "Home Assistant connected")
+    : !i?.ha?.paired ? badge("off", "Not added to Home Assistant")
+    : fresh || !i?.wifi?.connected ? badge("wait", "Connecting to Home Assistant…") : badge("off", "Home Assistant not connected");
+  return wifi + ha;
+}
+
 // A set-up Sticky was plugged in: which steps does this visit need?
 function startFlow(flow) {
   S.skipped.clear();
@@ -663,8 +687,11 @@ function startFlow(flow) {
   S.flow = flow;
   S.installPanel = false;
   if (flow === "wifi") { S.skipped.add(HA); S.skipped.add(REMOTE); S.wifi.change = true; return go(WIFI); }
-  S.skipped.add(WIFI);   // settings: Home Assistant (for its lists), then Your remote
-  go(HA);
+  // Settings: straight to Your remote, with what the Sticky has now. Home
+  // Assistant is optional there (to pick from its lists), unless already connected.
+  S.skipped.add(WIFI);
+  S.skipped.add(HA);
+  go(REMOTE);
 }
 
 // The end of a visit: the last step, showing its summary.
@@ -708,6 +735,7 @@ async function connect() {
     }
     status.hidden = false; status.className = "note"; status.textContent = "Asking the Sticky…";
     S.info = await S.serial.info(3);
+    S.connectedAt = Date.now();
     const i = S.info;
     S.wasConfigured = !!i?.configured;
     S.eraseAll = !i;

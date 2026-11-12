@@ -151,9 +151,10 @@ export class DemoSticky {
       fw: installed ? "0.2.0" : null, name: "sticky-remote-d3m0a1", wifi: null, settings: {},
       ha: { connected: false, paired: false },
     };
-    if (configured) {   // an older version, set up and in use
+    if (configured) {   // set up and in use; like the real one, it restarts when the port opens
       this.state.wifi = { ssid: "Maison" };
-      this.state.ha = { connected: true, paired: true };
+      this.state.ha = { connected: false, paired: true };
+      this.booted = Date.now();
       this.state.settings = { player: "media_player.salon", remote: "remote.salon", player_name: "Apple TV", app: "Infuse",
         app_label: "Open Infuse", light1: "light.floor_lamp", light1_name: "Floor lamp", light1_icon: "floor",
         light2: "light.ceiling", light2_name: "Ceiling", light2_icon: "ceiling", room: "Salon", ha_url: "", font_set: "inter",
@@ -175,9 +176,10 @@ export class DemoSticky {
     await sleep(400);
     if (!this.state.fw) return null;
     const s = this.state;
+    if (this.booted && Date.now() - this.booted > 8000 && s.ha.paired) s.ha.connected = true;
     return {
       sticky: "setup", event: "info", ok: true, protocol: 1, fw: s.fw, name: s.name, mac: "d0:ef:76:d3:a0:a1",
-      wifi: s.wifi ? { connected: true, hotspot: false, ip: "192.168.1.57", ssid: s.wifi.ssid }
+      wifi: s.wifi && !(this.booted && Date.now() - this.booted < 4000) ? { connected: true, hotspot: false, ip: "192.168.1.57", ssid: s.wifi.ssid }
                    : { connected: false, hotspot: true, ip: "" },
       ha: s.ha, configured: !!(s.settings.player || s.settings.light1), settings: s.settings,
       caps: ["scan", "touch_sound", "sleep_after"],
