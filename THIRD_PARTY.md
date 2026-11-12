@@ -10,6 +10,8 @@ their own licenses.
 | [Material Design Icons](https://pictogrammers.com/library/mdi/), by Pictogrammers | `firmware/fonts/materialdesignicons-webfont.ttf` | Apache 2.0 (`firmware/fonts/Apache-2.0.txt`) |
 | [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library), by Project Nayuki | `engine/core/qrcodegen/` | MIT (`engine/core/qrcodegen/LICENSE.md`) |
 | [esptool-js](https://github.com/espressif/esptool-js) 0.7.1, by Espressif | `web/vendor/` | Apache 2.0 (`web/vendor/esptool-js-LICENSE.txt`) |
+| Icon shapes after [Lucide](https://lucide.dev) | `web/icons/` | ISC |
+| Colour and spacing values after [shadcn/ui](https://ui.shadcn.com) | `web/wizard.css` | MIT |
 
 The glyph files in `web/fonts/` and the images in `web/previews/` are generated
 from the fonts above and keep their licenses.

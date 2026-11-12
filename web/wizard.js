@@ -72,6 +72,12 @@ function render() {
   const view = VIEWS[S.step]();
   $("#panel").innerHTML = view.html;
   view.bind?.();
+  // A new step: keyboard and screen-reader users start at its title.
+  if (S.step !== S.shown) {
+    const h = $("#panel h2");
+    if (h && S.shown !== undefined) { h.tabIndex = -1; h.focus({ preventScroll: true }); }
+    S.shown = S.step;
+  }
 }
 
 const actions = (hasBack, next, nextLabel = "Continue", nextDisabled = false) => `
@@ -85,7 +91,7 @@ function bindNav(onNext) {
   $("#next")?.addEventListener("click", onNext || fwd);
 }
 const portRow = (primary) => `
-  <div class="actions" style="margin-top:0">
+  <div class="actions" style="margin-top:${primary ? 0 : 20}px">
     <button class="${primary ? "primary big" : ""}" id="pick">${S.port ? "Choose Another Port" : "Connect the Sticky"}</button>
     <label><input type="checkbox" id="allports"> Show every port</label>
   </div>
@@ -286,7 +292,7 @@ const VIEWS = [
           <input type="password" id="token" value="${esc(h.token)}" autocomplete="off">
           <small>${h.url ? `<a href="${esc(h.url.replace(/\/+$/, ""))}/profile/security" target="_blank" rel="noopener">Create one in Home Assistant</a>` : "In Home Assistant: your profile › Security"}: “Create token”, from an admin account.</small></label>
         <div class="actions" style="margin-top:4px">
-          <button class="primary" id="hacheck">${connected ? "Connected ✓" : "Connect"}</button>
+          <button class="primary" id="hacheck">${connected ? `<i class="ic ic-check"></i> Connected` : "Connect"}</button>
           <span id="hastatus" class="${h.error ? "note bad" : "note"}" ${h.error || connected ? "" : "hidden"}>${esc(h.error || (connected ? `Connected to ${h.location} · ${h.states.length} entities` : ""))}</span>
         </div>
         <p><button class="link" id="manual">${h.manual ? "Use Home Assistant's lists instead" : "Can't connect? Enter the entities by hand"}</button></p>
@@ -473,7 +479,7 @@ const VIEWS = [
         html: `
           <h2>${S.flow === "setup" ? "Your Sticky is ready" : "All done"}</h2>
           <div class="${withPreview ? "with-device" : ""}"><div>
-            <p class="big-ok">✓</p>
+            <p class="big-ok"><i class="ic ic-check"></i></p>
             <p class="lead">${text}</p>
             <p>You can unplug it.</p>
           </div>${withPreview ? preview : ""}</div>
