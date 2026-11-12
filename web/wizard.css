@@ -191,3 +191,5 @@ button.big { font-size: 17px; padding: 12px 24px; }
   .demo-badge { margin-left: 0; }
   .bottom { padding-bottom: 20px; }
 }
+.card .hint { color: var(--mute); font-size: 13px; margin: -4px 0 10px; }
+.seg { flex-wrap: wrap; }

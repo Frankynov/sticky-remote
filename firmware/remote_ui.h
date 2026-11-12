@@ -1016,13 +1016,26 @@ inline void draw_setup_sleep(Ctx &c, const Model &m) {
 
 // The face left on the panel during deep sleep: drawn instead of the bottom
 // controls, which do nothing until a button wakes the device.
-inline void draw_sleep_banner(Ctx &c) {
-  const int y = VOL_Y - 10;
-  c.it.filled_rectangle(0, y - 4, W, H - y + 4, c.paper);
-  fill_rrect(c, M, y, W - 2 * M, VOL_H + 10, 18, c.ink);
-  const int cy = y + (VOL_H + 10) / 2;
-  c.it.print(M + 40, cy, c.f.i40, c.paper, TextAlign::CENTER, ICON_SLEEP);
-  c.it.print(M + 76, cy, c.f.t22, c.paper, TextAlign::CENTER_LEFT, "Asleep · press a button");
+// The face left on the panel during deep sleep. Dark, and nothing like the
+// live screen: tiles and playback shown there would be stale, and would look
+// as if they still answered a tap.
+inline void draw_asleep(Ctx &c, const Model &m, const char *room, bool time_valid, int hour, int minute) {
+  c.it.fill(c.ink);
+  c.it.print(W / 2, 290, c.f.i120, c.paper, TextAlign::CENTER, ICON_SLEEP);
+  c.it.print(W / 2, 390, c.f.t30, c.paper, TextAlign::CENTER, "Asleep");
+  c.it.print(W / 2, 436, c.f.t20, c.paper, TextAlign::CENTER, "Press any button to wake");
+  // What was true when it fell asleep, said as such.
+  std::string foot = room;
+  char buf[40];
+  if (time_valid) {
+    snprintf(buf, sizeof buf, "%ssince %d:%02d", foot.empty() ? "" : " · ", hour, minute);
+    foot += buf;
+  }
+  if (!std::isnan(m.battery)) {
+    snprintf(buf, sizeof buf, "%sbattery %d %%", foot.empty() ? "" : " · ", (int) m.battery);
+    foot += buf;
+  }
+  print_fit(c, W / 2, H - 44, c.f.t18, c.paper, TextAlign::CENTER, foot, W - 2 * M - 20);
 }
 
 inline void draw_cal_target(Ctx &c, int x, int y) {
@@ -1074,6 +1087,7 @@ inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
                         const char *player = "Apple TV") {
   c.it.fill(c.paper);
   if (m.sleeping && m.in_setup()) return draw_setup_sleep(c, m);
+  if (m.sleeping) return draw_asleep(c, m, room, time_valid, hour, minute);
   switch (m.setup()) {
     case Setup::WIFI: return draw_setup_wifi(c, m);
     case Setup::CONFIGURE: return draw_setup_configure(c, m);
@@ -1091,7 +1105,6 @@ inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
     draw_now(c, m, poster, now_epoch);
     draw_volume(c, m);
   }
-  if (m.sleeping) draw_sleep_banner(c);
 }
 
 struct Labels {
@@ -1339,6 +1352,7 @@ struct Actions {
   virtual void volume(bool up) = 0;
   virtual void open_infuse() = 0;
   virtual void save_touch_cal(const TouchCal &cal) {}   // the firmware stores it
+  virtual void sleep() {}                               // the AI button: deep sleep now
 };
 
 inline Actions *&actions() {
@@ -1466,7 +1480,8 @@ inline Action handle_touch(int rx, int ry, int x, int y, int64_t now_epoch, Acti
   return handle_tap(x, y, now_epoch, act);
 }
 
-// Physical buttons: AI = play/pause (or turn on when off), Up/Down = volume.
+// Physical buttons: AI = sleep now (any button wakes), Up/Down = volume.
+// Play/Pause is always on screen, so the AI button doesn't double as it.
 // While calibrating: AI saves, Up starts again, Down cancels.
 enum Button { BTN_AI, BTN_UP, BTN_DOWN };
 
@@ -1483,16 +1498,11 @@ inline void handle_button(Button b, int64_t now_epoch, Actions &act) {
     }
     return;
   }
-  if (m.sleeping || m.in_setup()) return;
+  if (m.sleeping) return;
+  if (b == BTN_AI) return act.sleep();   // during setup too
+  if (m.in_setup()) return;
   switch (b) {
-    case BTN_AI:
-      if (m.mode() == Mode::OFF) {
-        act.atv_power(true);
-      } else {
-        optimistic_play_pause(now_epoch);
-        act.play_pause();
-      }
-      break;
+    case BTN_AI: break;
     case BTN_UP: act.volume(true); break;
     case BTN_DOWN: act.volume(false); break;
   }

@@ -55,7 +55,7 @@ namespace sticky {
 static const char *const TAG = "sticky";
 constexpr int PROTOCOL = 1;
 // What this firmware's USB protocol can do beyond version 1, for the setup page.
-static const char *const CAPS[] = {"scan", "touch_sound"};
+static const char *const CAPS[] = {"scan", "touch_sound", "sleep_after"};
 
 struct Settings {
   std::string player, remote, player_name, app, app_label;
@@ -151,6 +151,38 @@ inline void set_sound(uint8_t level) {
   sound_pref().save(&level);
   esphome::global_preferences->sync();
 }
+
+// --- Sleep on battery (its own preference too) -------------------------------------
+// Minutes without a tap or a button press before deep sleep; "never" keeps it
+// awake until the AI button is pressed. On USB power it never sleeps by itself.
+static const char *const SLEEP_NAMES[] = {"1", "3", "10", "30", "never"};
+constexpr uint16_t SLEEP_MINUTES[] = {1, 3, 10, 30, 0};
+constexpr uint8_t SLEEP_CHOICES = 5;
+
+inline uint8_t &sleep_choice() {
+  static uint8_t choice = 1;   // 3 minutes
+  return choice;
+}
+
+inline esphome::ESPPreferenceObject &sleep_pref() {
+  static esphome::ESPPreferenceObject p = esphome::global_preferences->make_preference<uint8_t>(0x53534C50, true);
+  return p;
+}
+
+inline void load_sleep() {
+  uint8_t v = 1;
+  if (sleep_pref().load(&v) && v < SLEEP_CHOICES) sleep_choice() = v;
+}
+
+inline void set_sleep(uint8_t choice) {
+  if (choice >= SLEEP_CHOICES || choice == sleep_choice()) return;
+  sleep_choice() = choice;
+  sleep_pref().save(&choice);
+  esphome::global_preferences->sync();
+}
+
+/// Milliseconds of inactivity before sleeping on battery; 0 = never.
+inline uint32_t sleep_after_ms() { return (uint32_t) SLEEP_MINUTES[sleep_choice()] * 60000u; }
 
 // --- Touch calibration (its own preference, so settings resets keep it) -------
 struct StoredCal {
@@ -595,6 +627,7 @@ inline std::string info(const char *event) {
     STICKY_FIELDS(X)
 #undef X
     st["touch_sound"] = SOUND_NAMES[sound()];
+    st["sleep_after"] = SLEEP_NAMES[sleep_choice()];
     JsonArray caps = root["caps"].to<JsonArray>();
     for (const char *cap : CAPS) caps.add(cap);
     if (w != nullptr) {
@@ -649,6 +682,11 @@ inline void handle(const std::string &line) {
       const std::string level = in["touch_sound"].as<const char *>();
       for (uint8_t i = 0; i < 3; i++)
         if (level == SOUND_NAMES[i]) set_sound(i);
+    }
+    if (!in.isNull() && in["sleep_after"].is<const char *>()) {
+      const std::string choice = in["sleep_after"].as<const char *>();
+      for (uint8_t i = 0; i < SLEEP_CHOICES; i++)
+        if (choice == SLEEP_NAMES[i]) set_sleep(i);
     }
     if (!in.isNull() && !save(s)) return send_error("Could not save the settings.");
     send_line(esphome::json::build_json([](JsonObject root) {

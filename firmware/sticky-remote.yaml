@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.5.0"
+  firmware_version: "0.5.1"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -73,9 +73,8 @@ substitutions:
   # Over-the-air updates: empty means no password (the generic firmware).
   ota_password: ""
 
-  # Deep sleep after this long without a tap or button press (on battery
-  # only: on USB it stays awake).
-  sleep_after_ms: "180000"
+  # How long before it sleeps on battery is a device setting ("Sleep after":
+  # 1, 3, 10 or 30 minutes, or never), 3 minutes by default; on USB it stays awake.
   # During setup (hotspot open, not configured, or not yet added to HA).
   setup_sleep_after_ms: "600000"
 
@@ -125,6 +124,7 @@ esphome:
             sticky::set_default_touch_cal("${touch_map}");
             sticky::load_touch_cal();
             sticky::load_sound();
+            sticky::load_sleep();
             sticky::keep_scan_results();
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
@@ -147,6 +147,7 @@ esphome:
               }
               void open_infuse() override { id(atv_open_infuse).execute(); }
               void save_touch_cal(const remote_ui::TouchCal &c) override { sticky::save_touch_cal(c); }
+              void sleep() override { id(go_to_sleep).execute(); }
             };
             static EspActions esp_actions;
             remote_ui::actions() = &esp_actions;
@@ -242,6 +243,23 @@ select:
       - lambda: |-
           sticky::set_sound(x == "Off" ? 0 : x == "Quiet" ? 1 : 2);
           id(touch_sound).publish_state(x);
+
+  - platform: template
+    id: sleep_after
+    name: "Sleep after"
+    icon: mdi:sleep
+    entity_category: config
+    options: ["1 minute", "3 minutes", "10 minutes", "30 minutes", "Never"]
+    update_interval: 60s
+    lambda: |-
+      static const char *const NAMES[] = {"1 minute", "3 minutes", "10 minutes", "30 minutes", "Never"};
+      return std::string(NAMES[sticky::sleep_choice()]);
+    set_action:
+      - lambda: |-
+          static const char *const NAMES[] = {"1 minute", "3 minutes", "10 minutes", "30 minutes", "Never"};
+          for (uint8_t i = 0; i < 5; i++)
+            if (x == NAMES[i]) sticky::set_sleep(i);
+          id(sleep_after).publish_state(x);
 
 time:
   - platform: homeassistant
@@ -360,7 +378,7 @@ binary_sensor:
           id(last_activity) = millis();
           remote_ui::request();
 
-  # Physical buttons: AI/power = play/pause (hold = sleep now), up/down = volume.
+  # Physical buttons: AI/power = sleep now, up/down = volume.
   # A press that just woke the device only wakes it.
   - platform: gpio
     id: button_ai
@@ -371,7 +389,7 @@ binary_sensor:
       inverted: true
     on_multi_click:
       - timing:
-          - ON for at most 800ms
+          - ON for at most 1.5s
           - OFF for at least 50ms
         then:
           - lambda: |-
@@ -579,7 +597,9 @@ interval:
             lambda: |-
               // Setup screens (hotspot, pairing) get much longer: they need it awake.
               const auto &m = remote_ui::model();
-              const uint32_t limit = m.in_setup() ? ${setup_sleep_after_ms} : ${sleep_after_ms};
+              const uint32_t chosen = sticky::sleep_after_ms();   // 0: never by itself
+              if (chosen == 0) return false;
+              const uint32_t limit = m.in_setup() ? std::max<uint32_t>(chosen, ${setup_sleep_after_ms}) : chosen;
               return !id(usb_power).state && !m.sleeping && millis() - id(last_activity) > limit;
           then:
             - script.execute: go_to_sleep
@@ -707,7 +727,7 @@ font:
   - file: fonts/materialdesignicons-webfont.ttf
     id: i120
     size: 120
-    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0"]       # movie, tv-off, home-assistant
+    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2"]       # movie, tv-off, home-assistant, sleep
 
 display:
   - platform: epaper_spi

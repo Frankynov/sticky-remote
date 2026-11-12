@@ -71,6 +71,7 @@ struct CallbackActions : remote_ui::Actions {
   void remote_command(const char *c) override { send(std::string("remote ") + c); }
   void volume(bool up) override { send(up ? "volume up" : "volume down"); }
   void open_infuse() override { send("open_infuse"); }
+  void sleep() override { send("sleep"); }
 } g_actions;
 
 }  // namespace

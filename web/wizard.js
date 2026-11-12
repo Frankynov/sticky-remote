@@ -31,7 +31,7 @@ const S = {
   settings: {
     player: "", remote: "", player_name: "", app: "", app_label: "",
     light1: "", light1_name: "", light1_icon: "bulb", light2: "", light2_name: "", light2_icon: "bulb",
-    room: "", ha_url: "", font_set: "inter", touch_sound: "quiet",
+    room: "", ha_url: "", font_set: "inter", touch_sound: "quiet", sleep_after: "3",
   },
   timers: [],
   skipped: new Set(),   // steps this visit doesn't need (shown with a dash)
@@ -364,6 +364,8 @@ const VIEWS = [
                 ${seg("font_set", "Typeface", [["inter", "Inter"], ["trmnl", "TRMNL pixel"]])}
               </div>
               ${has("touch_sound") ? seg("touch_sound", "Sound when you tap", [["off", "Off"], ["quiet", "Quiet"], ["normal", "Normal"]]) : ""}
+              ${has("sleep_after") ? `${seg("sleep_after", "On battery, sleeps after", [["1", "1 min"], ["3", "3 min"], ["10", "10 min"], ["30", "30 min"], ["never", "Never"]])}
+                <p class="hint" id="sleep-hint"></p>` : ""}
             </section>
             <details><summary>Advanced</summary>
               ${pick("remote", "remote", "The player's remote entity (arrows and OK)")}
@@ -380,6 +382,13 @@ const VIEWS = [
         ${actions(true, true, "Save to the Sticky")}`,
       bind: () => {
         const preview = () => renderRemote($("#remote-preview"), previewData());
+        const sleepHint = () => {
+          const h = $("#sleep-hint");
+          if (h) h.textContent = s.sleep_after === "never"
+            ? "It stays on until you press the AI button, so the battery drains much faster. Any button wakes it."
+            : "The AI button puts it to sleep at once; any button wakes it. Plugged in, it stays awake.";
+        };
+        sleepHint();
         const ink = getComputedStyle(document.body).color;
         document.querySelectorAll("canvas[data-icon]").forEach((c) => drawIcon(c, c.dataset.icon, ink));
         document.querySelectorAll("[data-seg]").forEach((b) => b.addEventListener("click", () => {
@@ -387,6 +396,7 @@ const VIEWS = [
           document.querySelectorAll(`[data-seg="${b.dataset.seg}"]`).forEach((x) => {
             x.classList.toggle("on", x === b); x.setAttribute("aria-checked", x === b);
           });
+          sleepHint();
           preview();
         }));
         $("#add-light")?.addEventListener("click", () => { S.twoLights = true; render(); });
@@ -440,10 +450,13 @@ const VIEWS = [
     const bindAgain = () => $("#again").addEventListener("click", () => location.reload());
 
     if (S.finished) {
+      const after = has("sleep_after") ? s.sleep_after : "3";
+      const sleeps = after === "never" ? "It stays awake until you press the AI button"
+        : `On battery it sleeps after ${esc(after)} minute${after === "1" ? "" : "s"}, or when you press the AI button`;
       const text = S.flow === "update" ? `${esc(i.name)} runs Sticky Remote ${esc(i.fw)}, with its Wi-Fi, settings and Home Assistant pairing kept.`
         : S.flow === "wifi" ? `${esc(i.name)} is on <b>${esc(i.wifi?.ssid || "its new network")}</b>. Home Assistant finds it again by itself within a minute.`
         : S.flow === "settings" ? "The Sticky restarted with its new settings."
-        : "On battery it sleeps after 3 minutes; any button wakes it. To change what it controls, or to update it, plug it in and open this page again.";
+        : `${sleeps}; any button wakes it. To change what it controls, or to update it, plug it in and open this page again.`;
       const withPreview = S.flow === "setup" || S.flow === "settings";
       return {
         html: `
