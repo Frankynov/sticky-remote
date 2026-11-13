@@ -31,7 +31,7 @@ const S = {
   settings: {
     player: "", remote: "", player_name: "", app: "", app_label: "",
     light1: "", light1_name: "", light1_icon: "bulb", light2: "", light2_name: "", light2_icon: "bulb",
-    room: "", ha_url: "", font_set: "inter", touch_sound: "quiet", sleep_after: "3",
+    room: "", ha_url: "", font_set: "inter", touch_sound: "quiet", sleep_after: "3", sleep_clock: "on",
   },
   timers: [],
   skipped: new Set(),   // steps this visit doesn't need (shown with a dash)
@@ -382,6 +382,8 @@ const VIEWS = [
               ${has("touch_sound") ? seg("touch_sound", "Sound when you tap", [["off", "Off"], ["quiet", "Quiet"], ["normal", "Normal"]]) : ""}
               ${has("sleep_after") ? `${seg("sleep_after", "On battery, sleeps after", [["1", "1 min"], ["3", "3 min"], ["10", "10 min"], ["30", "30 min"], ["never", "Never"]])}
                 <p class="hint" id="sleep-hint"></p>` : ""}
+              ${has("sleep_clock") ? `${seg("sleep_clock", "While asleep", [["on", "Clock"], ["off", "Dark screen"]])}
+                <p class="hint">The clock ticks once a minute, which costs some battery. The dark screen uses the least.</p>` : ""}
             </section>
             <details><summary>Advanced</summary>
               ${pick("remote", "remote", "The player's remote entity (arrows and OK)")}

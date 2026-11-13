@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Extracts the firmware's exact glyphs from an ESPHome build (main.cpp) into
 web/fonts/<set>/<role>.fnt, the format the engine's sc_font_load_fnt_text reads.
-Both typefaces are in every build: Inter t18…t30, TRMNL r18…r30; icons i24…i120.
+Both typefaces are in every build: Inter t18…t30, TRMNL r18…r30; icons i24…i120;
+the sleep clock's digits (clock_inter, clock_trmnl).
 
   python3 web/make_web_fonts.py [path/to/main.cpp]
 """
@@ -21,12 +22,12 @@ for m in re.finditer(r"static constexpr font::Glyph (\w+)\[\] PROGMEM = \{(.*)\}
 fonts = {m[1]: (int(m[3]), int(m[4]), tables[m[2]])
          for m in re.finditer(r"new\((\w+)\) font::Font\((\w+), \d+, (\d+), (\d+),", src)}
 
-roles = ["t18", "t20", "t22", "t26", "t30", "i24", "i40", "i52", "i64", "i120"]
+roles = ["t18", "t20", "t22", "t26", "t30", "i24", "i40", "i52", "i64", "i120", "clock"]
 for set_name, prefix in (("inter", "t"), ("trmnl", "r")):
     out = ROOT / "web" / "fonts" / set_name
     out.mkdir(parents=True, exist_ok=True)
     for role in roles:
-        fid = prefix + role[1:] if role.startswith("t") else role
+        fid = prefix + role[1:] if role.startswith("t") else f"clock_{set_name}" if role == "clock" else role
         baseline, height, glyphs = fonts[fid]
         lines = [f"font {baseline} {height}"]
         for cp, arr, off, adv, ox, oy, w, h in glyphs:

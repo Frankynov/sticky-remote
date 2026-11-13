@@ -41,11 +41,13 @@
 #include "esphome/core/preferences.h"
 
 #include "driver/uart.h"
+#include "driver/gpio.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "esp_http_client.h"
+#include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "remote_ui.h"
@@ -55,7 +57,7 @@ namespace sticky {
 static const char *const TAG = "sticky";
 constexpr int PROTOCOL = 1;
 // What this firmware's USB protocol can do beyond version 1, for the setup page.
-static const char *const CAPS[] = {"scan", "touch_sound", "sleep_after"};
+static const char *const CAPS[] = {"scan", "touch_sound", "sleep_after", "sleep_clock"};
 
 struct Settings {
   std::string player, remote, player_name, app, app_label;
@@ -184,6 +186,64 @@ inline void set_sleep(uint8_t choice) {
 /// Milliseconds of inactivity before sleeping on battery; 0 = never.
 inline uint32_t sleep_after_ms() { return (uint32_t) SLEEP_MINUTES[sleep_choice()] * 60000u; }
 
+// --- Clock while asleep (its own preference) --------------------------------------
+// On: asleep on battery, the panel shows the time and the firmware dozes in
+// light sleep, waking once a minute to move it (doze() below). Off: the dark
+// "Asleep" face and deep sleep, which uses less.
+inline bool &clock_on() {
+  static bool on = true;
+  return on;
+}
+
+inline esphome::ESPPreferenceObject &clock_pref() {
+  static esphome::ESPPreferenceObject p = esphome::global_preferences->make_preference<uint8_t>(0x53434C4B, true);
+  return p;
+}
+
+inline void load_clock() {
+  uint8_t v = 1;
+  if (clock_pref().load(&v)) clock_on() = v != 0;
+  remote_ui::apply("sleep_clock", clock_on() ? "1" : "0");
+}
+
+inline void set_clock(bool on) {
+  if (on == clock_on()) return;
+  clock_on() = on;
+  const uint8_t v = on ? 1 : 0;
+  clock_pref().save(&v);
+  esphome::global_preferences->sync();
+  remote_ui::apply("sleep_clock", on ? "1" : "0");
+}
+
+enum class Woke { TIMER, BUTTON, USB, OTHER };
+
+/// Light sleep until the next whole minute (at most `max_s` seconds), a button
+/// (low on GPIO4/5/6) or USB power (high on GPIO9). Wi-Fi must be off first.
+/// Everything is kept: the panel's comparison frame, the clock, the settings.
+inline Woke doze(uint32_t max_s) {
+  const time_t t = ::time(nullptr);
+  uint32_t s = max_s;
+  if (t > 1600000000) s = std::min<uint32_t>(max_s, (uint32_t) (60 - t % 60));
+  if (s == 0) s = 60;
+  // The latch, charger and touch supply keep their levels; the buttons keep their pull-ups.
+  for (auto pin : {GPIO_NUM_45, GPIO_NUM_46, GPIO_NUM_39, GPIO_NUM_42, GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9})
+    gpio_sleep_sel_dis(pin);
+  for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6}) gpio_wakeup_enable(pin, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(GPIO_NUM_9, GPIO_INTR_HIGH_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup((uint64_t) s * 1000000ULL + 200000ULL);   // just past the minute mark
+  esp_light_sleep_start();
+  const auto cause = esp_sleep_get_wakeup_cause();
+  // Leave nothing armed: deep sleep (clock off) sets up its own wake sources.
+  for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9}) gpio_wakeup_disable(pin);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+  esphome::App.feed_wdt();
+  if (cause == ESP_SLEEP_WAKEUP_TIMER) return Woke::TIMER;
+  if (cause == ESP_SLEEP_WAKEUP_GPIO) return gpio_get_level(GPIO_NUM_9) ? Woke::USB : Woke::BUTTON;
+  return Woke::OTHER;
+}
+
 // --- Touch calibration (its own preference, so settings resets keep it) -------
 struct StoredCal {
   uint32_t magic;
@@ -270,6 +330,7 @@ inline void apply_to_ui() {
   remote_ui::apply("light_icon1", s.light2_icon);
   remote_ui::apply("configured", s.configured() ? "1" : "0");
   remote_ui::apply("app_button", s.app);
+  remote_ui::apply("sleep_clock", clock_on() ? "1" : "0");
 }
 
 // --- Artwork ------------------------------------------------------------------------
@@ -628,6 +689,7 @@ inline std::string info(const char *event) {
 #undef X
     st["touch_sound"] = SOUND_NAMES[sound()];
     st["sleep_after"] = SLEEP_NAMES[sleep_choice()];
+    st["sleep_clock"] = clock_on() ? "on" : "off";
     JsonArray caps = root["caps"].to<JsonArray>();
     for (const char *cap : CAPS) caps.add(cap);
     if (w != nullptr) {
@@ -687,6 +749,10 @@ inline void handle(const std::string &line) {
       const std::string choice = in["sleep_after"].as<const char *>();
       for (uint8_t i = 0; i < SLEEP_CHOICES; i++)
         if (choice == SLEEP_NAMES[i]) set_sleep(i);
+    }
+    if (!in.isNull() && in["sleep_clock"].is<const char *>()) {
+      const std::string v = in["sleep_clock"].as<const char *>();
+      if (v == "on" || v == "off") set_clock(v == "on");
     }
     if (!in.isNull() && !save(s)) return send_error("Could not save the settings.");
     send_line(esphome::json::build_json([](JsonObject root) {

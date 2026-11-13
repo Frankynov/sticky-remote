@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 enum { SC_WIDTH = 480, SC_HEIGHT = 800 };
-enum { SC_FONT_COUNT = 10 };  // t18 t20 t22 t26 t30 i24 i40 i52 i64 i120, in that order
+enum { SC_FONT_COUNT = 11 };  // t18 t20 t22 t26 t30 i24 i40 i52 i64 i120 clock, in that order
 enum { SC_REFRESH_NONE = 0, SC_REFRESH_PARTIAL = 1, SC_REFRESH_FULL = 2 };
 enum { SC_BUTTON_AI = 0, SC_BUTTON_UP = 1, SC_BUTTON_DOWN = 2 };
 enum { SC_MODE_OFF = 0, SC_MODE_IDLE = 1, SC_MODE_PLAYING = 2 };

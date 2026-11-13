@@ -15,11 +15,11 @@ namespace {
 
 display::BaseFont g_fonts[SC_FONT_COUNT];
 const char *const kFontNames[SC_FONT_COUNT] = {"t18", "t20", "t22", "t26", "t30",
-                                               "i24", "i40", "i52", "i64", "i120"};
+                                               "i24", "i40", "i52", "i64", "i120", "clock"};
 
 const remote_ui::Fonts &fonts() {
   static const remote_ui::Fonts f{&g_fonts[0], &g_fonts[1], &g_fonts[2], &g_fonts[3], &g_fonts[4],
-                                  &g_fonts[5], &g_fonts[6], &g_fonts[7], &g_fonts[8], &g_fonts[9]};
+                                  &g_fonts[5], &g_fonts[6], &g_fonts[7], &g_fonts[8], &g_fonts[9], &g_fonts[10]};
   return f;
 }
 

@@ -37,7 +37,8 @@ SETS = json.loads((ROOT / "firmware" / "fonts" / "sets.json").read_text())
 
 
 def fonts_for(set_name):
-    text = {role: (ROOT / "firmware" / "fonts" / path, size, TEXT_CHARS)
+    chars = SETS.get("_chars", {})   # roles with a glyph subset (the clock: digits only)
+    text = {role: (ROOT / "firmware" / "fonts" / path, size, list(chars.get(role, TEXT_CHARS)))
             for role, (path, size) in SETS[set_name]["fonts"].items()}
     return {**text, **ICON_FONTS}
 

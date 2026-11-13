@@ -158,7 +158,7 @@ export class DemoSticky {
       this.state.settings = { player: "media_player.salon", remote: "remote.salon", player_name: "Apple TV", app: "Infuse",
         app_label: "Open Infuse", light1: "light.floor_lamp", light1_name: "Floor lamp", light1_icon: "floor",
         light2: "light.ceiling", light2_name: "Ceiling", light2_icon: "ceiling", room: "Salon", ha_url: "", font_set: "inter",
-        touch_sound: "quiet", sleep_after: "3" };
+        touch_sound: "quiet", sleep_after: "3", sleep_clock: "on" };
     }
   }
   /** Demo: after "flashing", the new version runs; erasing loses everything. */
@@ -182,7 +182,7 @@ export class DemoSticky {
       wifi: s.wifi && !(this.booted && Date.now() - this.booted < 4000) ? { connected: true, hotspot: false, ip: "192.168.1.57", ssid: s.wifi.ssid }
                    : { connected: false, hotspot: true, ip: "" },
       ha: s.ha, configured: !!(s.settings.player || s.settings.light1), settings: s.settings,
-      caps: ["scan", "touch_sound", "sleep_after"],
+      caps: ["scan", "touch_sound", "sleep_after", "sleep_clock"],
       networks: this.scanned && Date.now() - this.scanned > 2500
         ? [{ ssid: "Maison", rssi: -48, secure: true }, { ssid: "Maison-IoT", rssi: -61, secure: true },
            { ssid: "Maison", rssi: -70, secure: true }, { ssid: "Cafe du coin", rssi: -77, secure: false },

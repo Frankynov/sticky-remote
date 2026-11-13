@@ -131,6 +131,8 @@ struct Model {
   bool online = false;
   float battery = NAN;
   bool usb = false;
+  bool sleep_clock = true;        // asleep on battery: a clock that ticks every minute
+  int dow = 0, day = 0, month = 0;   // the local date, for the sleep clock (0: unknown)
   Page page = Page::REMOTE;   // always Remote since 0.5.0 (one page); kept for the engine's API
   bool state_seen = false;
   Press pressed = Press::NONE;
@@ -532,6 +534,7 @@ inline int shown_minute(const Model &m, int64_t now_epoch) {
 struct Fonts {
   BaseFont *t18, *t20, *t22, *t26, *t30;
   BaseFont *i24, *i40, *i52, *i64, *i120;
+  BaseFont *clock;   // digits and a colon only, for the sleep clock
 };
 
 struct Ctx {
@@ -1014,20 +1017,34 @@ inline void draw_setup_sleep(Ctx &c, const Model &m) {
   print_wrapped(c, M + 30, 560, c.f.t18, c.ink, "Plugged into USB, it stays awake during setup.", W - 2 * M - 60, 24);
 }
 
-// The face left on the panel during deep sleep: drawn instead of the bottom
-// controls, which do nothing until a button wakes the device.
-// The face left on the panel during deep sleep. Dark, and nothing like the
-// live screen: tiles and playback shown there would be stale, and would look
-// as if they still answered a tap.
+// The face left on the panel while the Sticky sleeps. Dark, and nothing like
+// the live screen: tiles and playback shown there would be stale, and would
+// look as if they still answered a tap. With the sleep clock on, the time
+// takes the middle and ticks once a minute (the firmware dozes in between).
+static const char *const DAY_NAMES[] = {"", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+static const char *const MONTH_NAMES[] = {"", "January", "February", "March", "April", "May", "June", "July",
+                                          "August", "September", "October", "November", "December"};
+
 inline void draw_asleep(Ctx &c, const Model &m, const char *room, bool time_valid, int hour, int minute) {
   c.it.fill(c.ink);
-  c.it.print(W / 2, 290, c.f.i120, c.paper, TextAlign::CENTER, ICON_SLEEP);
-  c.it.print(W / 2, 390, c.f.t30, c.paper, TextAlign::CENTER, "Asleep");
-  c.it.print(W / 2, 436, c.f.t20, c.paper, TextAlign::CENTER, "Press any button to wake");
+  const bool clock = m.sleep_clock && time_valid;
+  char buf[48];
+  if (clock) {
+    snprintf(buf, sizeof buf, "%d:%02d", hour, minute);
+    c.it.print(W / 2, 330, c.f.clock, c.paper, TextAlign::CENTER, buf);
+    if (m.month >= 1 && m.month <= 12 && m.dow >= 1 && m.dow <= 7) {
+      snprintf(buf, sizeof buf, "%s %d %s", DAY_NAMES[m.dow], m.day, MONTH_NAMES[m.month]);
+      c.it.print(W / 2, 448, c.f.t26, c.paper, TextAlign::CENTER, buf);
+    }
+    c.it.print(W / 2, H - 92, c.f.t18, c.paper, TextAlign::CENTER, "Asleep · press any button to wake");
+  } else {
+    c.it.print(W / 2, 290, c.f.i120, c.paper, TextAlign::CENTER, ICON_SLEEP);
+    c.it.print(W / 2, 390, c.f.t30, c.paper, TextAlign::CENTER, "Asleep");
+    c.it.print(W / 2, 436, c.f.t20, c.paper, TextAlign::CENTER, "Press any button to wake");
+  }
   // What was true when it fell asleep, said as such.
   std::string foot = room;
-  char buf[40];
-  if (time_valid) {
+  if (time_valid && !clock) {
     snprintf(buf, sizeof buf, "%ssince %d:%02d", foot.empty() ? "" : " · ", hour, minute);
     foot += buf;
   }
@@ -1325,6 +1342,15 @@ inline void apply(const std::string &key, const std::string &v) {
   } else if (key == "configured") {
     m.configured = v == "1";
     return request(true);
+  } else if (key == "sleep_clock") {
+    m.sleep_clock = v == "1";
+    if (!m.sleeping) return;
+  } else if (key == "date") {   // "day-of-week day month", as ESPTime counts them (Sunday = 1)
+    int dow = 0, day = 0, month = 0;
+    sscanf(v.c_str(), "%d %d %d", &dow, &day, &month);
+    if (dow == m.dow && day == m.day && month == m.month) return;
+    m.dow = dow; m.day = day; m.month = month;
+    if (!m.sleeping) return;
   } else if (key == "picture") {
     // New artwork: no poster until its download lands.
     const std::string pic = clean(v);
@@ -1364,7 +1390,9 @@ inline Actions *&actions() {
 // Keeping a finger on an arrow (or a volume end) repeats it, so long lists
 // scroll without tapping. A repeat sends the command and nothing else: the
 // arrow is already shown pressed, so the screen has nothing to redraw.
-constexpr uint32_t HOLD_START_MS = 450, HOLD_EVERY_MS = 220, HOLD_MAX_MS = 8000;
+// HOLD_MAX_MS bounds a release the touch controller never reported: after it
+// the finger has to lift and press again, which also ends a runaway repeat.
+constexpr uint32_t HOLD_START_MS = 450, HOLD_EVERY_MS = 220, HOLD_MAX_MS = 3000;
 
 struct Hold {
   Action action = NONE;

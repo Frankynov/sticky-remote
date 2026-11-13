@@ -1,10 +1,12 @@
 {
-  "_comment": "Text font sets for the Sticky. Each UI role (t18…t30, named after Inter's sizes) maps to a TTF and a pixel size. Used by sim/make_fonts.py and the Sticky Simulator app; the firmware gets the same values as font_<role> / font_<role>_size substitutions.",
+  "_comment": "Text font sets for the Sticky. Each UI role (t18…t30, named after Inter's sizes; clock = the sleep clock, digits only, see _chars) maps to a TTF and a pixel size. Used by sim/make_fonts.py and the Sticky Simulator app; the firmware gets the same values as font_<role> / font_<role>_size substitutions.",
+  "_chars": {"clock": "0123456789:"},
   "inter": {
     "label": "Inter Bold",
     "fonts": {
       "t18": ["Inter-Bold.ttf", 18], "t20": ["Inter-Bold.ttf", 20], "t22": ["Inter-Bold.ttf", 22],
-      "t26": ["Inter-Bold.ttf", 26], "t30": ["Inter-Bold.ttf", 30]
+      "t26": ["Inter-Bold.ttf", 26], "t30": ["Inter-Bold.ttf", 30],
+      "clock": ["Inter-Bold.ttf", 144]
     }
   },
   "trmnl": {
@@ -12,7 +14,8 @@
     "fonts": {
       "t18": ["trmnl/TRMNL21-Bold.ttf", 21], "t20": ["trmnl/TRMNL21-Bold.ttf", 21],
       "t22": ["trmnl/TRMNL21-Bold.ttf", 21], "t26": ["trmnl/TRMNL12-Bold.ttf", 24],
-      "t30": ["trmnl/TRMNL16-Bold.ttf", 32]
+      "t30": ["trmnl/TRMNL16-Bold.ttf", 32],
+      "clock": ["trmnl/TRMNL16-Bold.ttf", 128]
     }
   }
 }

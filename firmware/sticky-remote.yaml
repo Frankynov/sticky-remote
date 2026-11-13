@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.5.1"
+  firmware_version: "0.6.0"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -125,6 +125,7 @@ esphome:
             sticky::load_touch_cal();
             sticky::load_sound();
             sticky::load_sleep();
+            sticky::load_clock();
             sticky::keep_scan_results();
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
@@ -273,6 +274,13 @@ globals:
     initial_value: "false"
   - id: last_activity
     type: uint32_t
+  # Clock while asleep: light sleep between minute ticks (sticky::doze).
+  - id: dozing
+    type: bool
+    initial_value: "false"
+  # When a button last woke it: that press only wakes it.
+  - id: woke_at
+    type: uint32_t
     initial_value: "0"
   - id: last_tap
     type: uint32_t
@@ -322,6 +330,17 @@ switch:
     internal: true
     restore_mode: ALWAYS_ON
     setup_priority: 1100     # before the GT911 initialises
+  # Also set from the setup page; stored by sticky_device.h.
+  - platform: template
+    id: sleep_clock
+    name: "Clock while asleep"
+    icon: mdi:clock-outline
+    entity_category: config
+    lambda: 'return sticky::clock_on();'
+    turn_on_action:
+      - lambda: 'sticky::set_clock(true); id(sleep_clock).publish_state(true);'
+    turn_off_action:
+      - lambda: 'sticky::set_clock(false); id(sleep_clock).publish_state(false);'
 
 deep_sleep:
   id: deep_sleep_ctl
@@ -394,14 +413,17 @@ binary_sensor:
         then:
           - lambda: |-
               id(last_activity) = millis();
-              if (millis() < 2000) return;   // the press that woke it
+              if (id(dozing)) return id(wake_up).execute();
+              if (millis() < 2000 || millis() - id(woke_at) < 1500) return;   // the press that woke it
               auto t = id(ha_time).now();
               remote_ui::handle_button(remote_ui::BTN_AI, t.is_valid() ? t.timestamp : 0,
                                        *remote_ui::actions());
       - timing:
           - ON for at least 1.5s
         then:
-          - script.execute: go_to_sleep
+          - lambda: |-
+              if (id(dozing)) return id(wake_up).execute();
+              if (millis() - id(woke_at) > 2500) id(go_to_sleep).execute();
   - platform: gpio
     id: button_up
     pin:
@@ -412,7 +434,9 @@ binary_sensor:
     on_press:
       - lambda: |-
           id(last_activity) = millis();
-          if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_UP, 0, *remote_ui::actions());
+          if (id(dozing)) return id(wake_up).execute();
+          if (millis() > 2000 && millis() - id(woke_at) > 1500)
+            remote_ui::handle_button(remote_ui::BTN_UP, 0, *remote_ui::actions());
   - platform: gpio
     id: button_down
     pin:
@@ -423,7 +447,9 @@ binary_sensor:
     on_press:
       - lambda: |-
           id(last_activity) = millis();
-          if (millis() > 2000) remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
+          if (id(dozing)) return id(wake_up).execute();
+          if (millis() > 2000 && millis() - id(woke_at) > 1500)
+            remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
     # Hold 3 s: touch calibration, in development builds only (touch_calibration).
     on_multi_click:
       - timing:
@@ -526,11 +552,12 @@ script:
             entity_id: !lambda "return sticky::settings().player;"
             source: !lambda "return sticky::settings().app;"
 
-  # Leave a "press a button" face on the panel, freeze the power latch, sleep.
+  # Leave the "Asleep" face on the panel, then sleep. With the clock on (and
+  # off USB, and set up), that is light sleep with a wake every minute to move
+  # the clock; otherwise the power latch is frozen and it deep-sleeps.
   - id: go_to_sleep
     mode: single
     then:
-      - logger.log: Going to deep sleep
       - lambda: |-
           remote_ui::model().sleeping = true;
           remote_ui::request(true);
@@ -543,8 +570,30 @@ script:
           condition:
             lambda: 'return !id(epd).is_updating();'
           timeout: 20s
-      - lambda: 'remote_ui::hold_pins_for_sleep();'
-      - deep_sleep.enter: deep_sleep_ctl
+      - if:
+          condition:
+            lambda: 'return sticky::clock_on() && !remote_ui::model().in_setup() && !id(usb_power).state;'
+          then:
+            - logger.log: Dozing, with the clock
+            - lambda: |-
+                wifi::global_wifi_component->disable();
+                id(dozing) = true;
+          else:
+            - logger.log: Going to deep sleep
+            - lambda: 'remote_ui::hold_pins_for_sleep();'
+            - deep_sleep.enter: deep_sleep_ctl
+
+  # A button or USB power ended a doze: back to the live screen.
+  - id: wake_up
+    mode: single
+    then:
+      - lambda: |-
+          id(dozing) = false;
+          id(woke_at) = millis();
+          id(last_activity) = millis();
+          remote_ui::model().sleeping = false;
+          remote_ui::request(true);
+          wifi::global_wifi_component->enable();
 
 interval:
   # USB setup protocol: read the serial line often (its buffer is small).
@@ -557,11 +606,30 @@ interval:
   - interval: 20ms
     then:
       - lambda: |-
+          // Dozing: once the clock is drawn, light-sleep until the next minute,
+          // a button or USB power. A minute tick redraws (partial); the half
+          // hours get a full refresh, which clears the ghost of old digits.
+          if (id(dozing)) {
+            if (id(epd).is_updating()) return;
+            if (remote_ui::redraw().dirty) goto refresh;
+            const auto woke = sticky::doze(600);
+            auto t = id(ha_time).now();
+            if (woke != sticky::Woke::TIMER) return id(wake_up).execute();
+            if (t.is_valid()) {
+              char d[24];
+              snprintf(d, sizeof d, "%d %d %d", t.day_of_week, t.day_of_month, t.month);
+              remote_ui::apply("date", d);
+              if (t.minute % 30 == 0) remote_ui::request(true);
+            }
+            remote_ui::minute_tick(t.is_valid(), t.hour, t.minute, t.timestamp);
+            return;
+          }
           // Hold to repeat: only while the touch controller still reports a finger.
           if (id(touch).get_touches().empty()) remote_ui::touch_released();
           remote_ui::hold_tick(*remote_ui::actions());
           remote_ui::feedback_tick();   // clears the pad's pressed look
           if (id(epd).is_updating()) return;
+          refresh:
           bool full = false;
           if (!remote_ui::take_refresh(remote_ui::model(), full)) return;
           if (full) id(epd).request_full_update();
@@ -572,7 +640,18 @@ interval:
     then:
       - lambda: |-
           auto t = id(ha_time).now();
+          if (t.is_valid()) {
+            char d[24];
+            snprintf(d, sizeof d, "%d %d %d", t.day_of_week, t.day_of_month, t.month);
+            remote_ui::apply("date", d);
+          }
           remote_ui::minute_tick(t.is_valid(), t.hour, t.minute, t.timestamp);
+      # Put to sleep on USB, it stayed awake (USB wakes it); unplugged, it sleeps for real.
+      - if:
+          condition:
+            lambda: 'return remote_ui::model().sleeping && !id(dozing) && !id(usb_power).state && !id(go_to_sleep).is_running();'
+          then:
+            - script.execute: go_to_sleep
 
   # Network state for the setup screens (hotspot active, connected, address).
   - interval: 1s
@@ -728,6 +807,15 @@ font:
     id: i120
     size: 120
     glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2"]       # movie, tv-off, home-assistant, sleep
+  # The sleep clock: digits only, one per typeface.
+  - file: fonts/Inter-Bold.ttf
+    id: clock_inter
+    size: 144
+    glyphs: ["0123456789:"]
+  - file: fonts/trmnl/TRMNL16-Bold.ttf
+    id: clock_trmnl
+    size: 128
+    glyphs: ["0123456789:"]
 
 display:
   - platform: epaper_spi
@@ -740,9 +828,9 @@ display:
     full_update_every: 255
     lambda: |-
       static const remote_ui::Fonts inter{id(t18), id(t20), id(t22), id(t26), id(t30),
-                                          id(i24), id(i40), id(i52), id(i64), id(i120)};
+                                          id(i24), id(i40), id(i52), id(i64), id(i120), id(clock_inter)};
       static const remote_ui::Fonts trmnl{id(r18), id(r20), id(r22), id(r26), id(r30),
-                                          id(i24), id(i40), id(i52), id(i64), id(i120)};
+                                          id(i24), id(i40), id(i52), id(i64), id(i120), id(clock_trmnl)};
       remote_ui::Ctx c{it, sticky::trmnl() ? trmnl : inter};
       c.gray4 = ${grayscale};
       auto t = id(ha_time).now();

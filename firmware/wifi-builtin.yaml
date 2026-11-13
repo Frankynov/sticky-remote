@@ -7,6 +7,9 @@ wifi:
   # Waking from deep sleep is a cold boot: skip the scan to reconnect faster.
   fast_connect: true
   reboot_timeout: 0s
+  # A remote answers taps: no modem sleep (ESPHome's ESP32 default), which
+  # holds packets back for tens of ms at a time and bunches them up.
+  power_save_mode: none
   ap:
     # Open (no password), as most ESP devices do: it only runs while the
     # Sticky can't connect, and its screen shows how to join it.

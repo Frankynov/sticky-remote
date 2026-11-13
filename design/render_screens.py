@@ -21,7 +21,7 @@ PLAYING = ["atv_state playing", "app Infuse", "title The Long Night", "duration 
            "position_at 2026-10-26T18:00:00+00:00", "picture night"]
 
 
-def shot(extra, taps=(), with_poster=False):
+def shot(extra, taps=(), with_poster=False, hm=(20, 30)):
     p = subprocess.Popen([str(TMP / "sim"), str(ROOT / "web" / "fonts" / "inter")],
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     def cmd(line):
@@ -34,16 +34,17 @@ def shot(extra, taps=(), with_poster=False):
         cmd(f"poster {raw} {poster.width} {poster.height}")
     for x, y in taps:
         cmd(f"tap {x} {y} {NOW}")
-    time.sleep(0.35)
+    time.sleep(0.5)
     pbm = TMP / "screens.pbm"
-    cmd(f"frame {pbm} 1 20 30 {NOW}")
+    cmd(f"frame {pbm} 1 {hm[0]} {hm[1]} {NOW}")
     im = Image.open(pbm).convert("L")
     p.kill()
     return im
 
 
 screens = [shot(PLAYING, with_poster=True), shot(PLAYING, taps=[(240, 440)], with_poster=True),   # a pressed arrow
-           shot(["atv_state idle", "app Infuse"]), shot(["atv_state off"])]
+           shot(["atv_state idle", "app Infuse"]), shot(["atv_state off"]),
+           shot(["atv_state off", "date 5 13 11", "sleeping 1"], hm=(21, 47))]   # asleep, with the clock
 gap = 24
 sheet = Image.new("L", (len(screens) * 480 + (len(screens) + 1) * gap, 800 + 2 * gap), 150)
 for i, im in enumerate(screens):

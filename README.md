@@ -38,11 +38,15 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 - **One page, no tabs.** Everything is on screen at once, so nothing you do
   needs more than a fast partial refresh. The full refresh that clears
   e-paper ghosting waits until the Sticky has been left alone for 3 seconds.
-- **Sleep**: on battery it deep-sleeps after 1, 3 (default), 10 or 30 minutes,
-  or never by itself; the AI button puts it to sleep at once and any button
-  wakes it. Asleep, the panel shows a dark "Asleep" screen, not the last state.
-- **Touch sound** (Off, Quiet, Normal) and **Sleep after**: from the setup page
-  or the Sticky's device page in Home Assistant (`select`s under Configuration).
+- **Sleep**: on battery it sleeps after 1, 3 (default), 10 or 30 minutes, or
+  never by itself; the AI button puts it to sleep at once and any button wakes
+  it. Asleep, the panel shows a dark screen, not the last state: by default a
+  large **clock** with the date, which ticks once a minute (the Sticky dozes
+  in light sleep in between, Wi-Fi off, and wakes for a second to move it).
+  With the clock off it shows "Asleep" and deep-sleeps, which uses the least.
+- **Touch sound** (Off, Quiet, Normal), **Sleep after** and **Clock while
+  asleep**: from the setup page or the Sticky's device page in Home Assistant
+  (under Configuration).
 - **Artwork** loads in a background task: download (HTTPS with certificate
   checks) and JPEG decode at 1/2, 1/4 or 1/8 scale never hold up touch or the
   screen. Other formats fall back to ESPHome's `online_image`.
@@ -156,15 +160,16 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 - `{"sticky":"setup","cmd":"scan"}` starts a Wi-Fi scan; the networks come
   with the next `get`, a few seconds later.
 - The info line's `caps` lists what the firmware supports beyond the first
-  protocol (`scan`, `touch_sound`, `sleep_after`); the setup page hides what's missing.
+  protocol (`scan`, `touch_sound`, `sleep_after`, `sleep_clock`); the setup page hides what's missing.
 - Development builds (`touch_calibration: "true"`) add
   `{"sticky":"setup","cmd":"calibrate"}` and `{"sticky":"setup","cmd":"touch_reset"}`.
   The info line's `touch` object gives the map in use and its source.
 - Setting fields: `player remote player_name app app_label light1 light1_name
   light1_icon light2 light2_name light2_icon room ha_url font_set`. Icons are
   `bulb`, `ceiling`, `floor` or `star`; `font_set` is `inter` or `trmnl`.
-  `touch_sound` (`off`, `quiet`, `normal`) and `sleep_after` (`1`, `3`, `10`,
-  `30` minutes, or `never`) are accepted in `settings` too.
+  `touch_sound` (`off`, `quiet`, `normal`), `sleep_after` (`1`, `3`, `10`,
+  `30` minutes, or `never`) and `sleep_clock` (`on`, `off`) are accepted in
+  `settings` too.
 - Send at most 64 bytes every ~10 ms: the receive buffer is small.
 
 ## What to check on a real device
@@ -181,8 +186,12 @@ newline-delimited JSON lines with `"sticky":"setup"`.
    logged as `touch x=… y=… raw x=… y=…`.
 3. **Power latch**: the device stays on after you let go of the button.
 4. **Sleep and wake**: after the chosen time on battery, or on an AI press, it
-   shows the dark "Asleep" screen, and any button wakes it. On USB it stays awake
-   unless you press AI.
+   shows the clock (or the dark "Asleep" screen), and any button wakes it. On
+   USB it stays awake unless you press AI. With the clock, check that the
+   minute moves without a flash (a partial refresh), that the half hours get
+   one full refresh, that a button wakes it within a second and Wi-Fi comes
+   back, and how much battery a night costs: the light sleep behind it keeps
+   the touch controller powered, and no one has measured it yet.
 5. **Artwork**: a poster shows up when something plays.
 
 ## Notes
@@ -192,6 +201,12 @@ newline-delimited JSON lines with `"sticky":"setup"`.
   refresh (a tap, the minute tick) turns the whole panel back to black and
   white until the next full one. The greys are layered on the black-and-white
   dither, so that state looks exactly like the default build.
+- **Light sleep for the clock**: `sticky::doze()` (in `sticky_device.h`)
+  arms the three buttons, the USB-power pin and a timer to the next whole
+  minute, then calls `esp_light_sleep_start()`; everything (the panel's
+  comparison frame, the clock, the settings) survives, so the minute tick is
+  an ordinary partial refresh. Wi-Fi is disabled first and re-enabled on wake.
+  Deep sleep (clock off) is unchanged.
 - **Media details**: HA sends an attribute only when it changes and never
   says when one disappears, so the Sticky clears title, artist and series
   itself when playback stops or the app changes.
