@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.6.2"
+  firmware_version: "0.6.3"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -409,7 +409,8 @@ binary_sensor:
         then:
           - lambda: |-
               id(last_activity) = millis();
-              if (id(dozing)) return id(wake_up).execute();
+              ESP_LOGI("buttons", "AI pressed (asleep %d, dozing %d)", remote_ui::model().sleeping, id(dozing));
+              if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
               if (millis() < 2000 || millis() - id(woke_at) < 1500) return;   // the press that woke it
               auto t = id(ha_time).now();
               remote_ui::handle_button(remote_ui::BTN_AI, t.is_valid() ? t.timestamp : 0,
@@ -418,7 +419,7 @@ binary_sensor:
           - ON for at least 1.5s
         then:
           - lambda: |-
-              if (id(dozing)) return id(wake_up).execute();
+              if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
               if (millis() - id(woke_at) > 2500) id(go_to_sleep).execute();
   - platform: gpio
     id: button_up
@@ -430,7 +431,8 @@ binary_sensor:
     on_press:
       - lambda: |-
           id(last_activity) = millis();
-          if (id(dozing)) return id(wake_up).execute();
+          ESP_LOGI("buttons", "Up pressed");
+          if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
           if (millis() > 2000 && millis() - id(woke_at) > 1500)
             remote_ui::handle_button(remote_ui::BTN_UP, 0, *remote_ui::actions());
   - platform: gpio
@@ -443,7 +445,8 @@ binary_sensor:
     on_press:
       - lambda: |-
           id(last_activity) = millis();
-          if (id(dozing)) return id(wake_up).execute();
+          ESP_LOGI("buttons", "Down pressed");
+          if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
           if (millis() > 2000 && millis() - id(woke_at) > 1500)
             remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
     # Hold 3 s: touch calibration, in development builds only (touch_calibration).
@@ -566,6 +569,9 @@ script:
           condition:
             lambda: 'return !id(epd).is_updating();'
           timeout: 20s
+      - lambda: |-
+          ESP_LOGI("sleep", "Asleep face drawn (clock %d, USB %d, setup %d)", sticky::clock_on(),
+                   id(usb_power).state, remote_ui::model().in_setup());
       - if:
           condition:
             lambda: 'return sticky::clock_on() && !remote_ui::model().in_setup() && !id(usb_power).state;'
@@ -575,15 +581,22 @@ script:
                 wifi::global_wifi_component->disable();
                 id(dozing) = true;
           else:
-            - logger.log: Going to deep sleep
-            - lambda: 'remote_ui::hold_pins_for_sleep();'
+            - logger.log: "Going to deep sleep (on USB it waits, showing the face, until unplugged or a button)"
+            - lambda: |-
+                id(deep_sleep_ctl).allow_deep_sleep();
+                remote_ui::hold_pins_for_sleep();
             - deep_sleep.enter: deep_sleep_ctl
 
-  # A button or USB power ended a doze: back to the live screen.
+  # A button (or USB power) ended a doze, or the asleep face on USB, where
+  # deep sleep waits for the cable to go: back to the live screen.
   - id: wake_up
     mode: single
     then:
+      - script.stop: go_to_sleep
       - lambda: |-
+          ESP_LOGI("sleep", "Awake again");
+          id(deep_sleep_ctl).prevent_deep_sleep();   // a deep sleep waiting for USB to go stays cancelled
+          remote_ui::release_sleep_holds();
           id(dozing) = false;
           id(woke_at) = millis();
           id(last_activity) = millis();
@@ -610,7 +623,7 @@ interval:
             if (id(epd).is_updating()) return;
             if (remote_ui::redraw().dirty) goto refresh;
             const auto woke = sticky::doze(600);
-            if (woke == sticky::Woke::REJECTED) return;   // logged; tried again next tick
+            if (woke == sticky::Woke::REJECTED || woke == sticky::Woke::OTHER) return;   // logged; doze again
             auto t = id(ha_time).now();
             if (woke != sticky::Woke::TIMER) return id(wake_up).execute();
             if (t.is_valid()) {

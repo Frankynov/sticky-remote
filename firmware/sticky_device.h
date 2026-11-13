@@ -250,7 +250,13 @@ inline Woke doze(uint32_t max_s) {
   esphome::App.feed_wdt();
   if (err != ESP_OK) return Woke::REJECTED;
   if (cause == ESP_SLEEP_WAKEUP_TIMER) return Woke::TIMER;
-  if (cause == ESP_SLEEP_WAKEUP_GPIO) return gpio_get_level(GPIO_NUM_9) ? Woke::USB : Woke::BUTTON;
+  if (cause == ESP_SLEEP_WAKEUP_GPIO) {
+    // Woken by a pin: make sure one really is active, so a glitch doesn't end the doze.
+    if (gpio_get_level(GPIO_NUM_9)) return Woke::USB;
+    for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6})
+      if (!gpio_get_level(pin)) return Woke::BUTTON;
+    ESP_LOGW("sticky", "woken by a pin, but no button is pressed and USB is out: dozing on");
+  }
   return Woke::OTHER;
 }
 
