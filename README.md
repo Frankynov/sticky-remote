@@ -166,7 +166,7 @@ renders `web/previews/`, then stages everything that goes online in
   `.github/workflows/deploy-site.yml`. It takes the page from the release's
   tag and the firmware image from the release, checks the image against the
   SHA-256 and size in `manifest.json`, stages it with `stage.sh` and uploads
-  it with lftp (FTP over TLS only, or SFTP). The server login is in
+  it with lftp over SFTP (encrypted; an ftp:// address is tried as SFTP). The server login is in
   the repository's secrets (`SITE_URL`, `SITE_USER`, `SITE_PASSWORD`,
   `SITE_DIR`); the Actions tab can redeploy any release by hand.
 - `python3 web/serve_local.py` serves the page locally without caching.

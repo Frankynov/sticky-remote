@@ -7,10 +7,10 @@
 #
 # The server login lives only in this repository's secrets (Settings ›
 # Secrets and variables › Actions), set by the owner:
-#   SITE_URL       ftp://ftp.example.net (needs FTP over TLS) or sftp://ssh.example.net
+#   SITE_URL       the server's address (ftp://… or sftp://…; uploads always go over SFTP)
 #   SITE_USER      the FTP/SFTP user
 #   SITE_PASSWORD  its password
-#   SITE_DIR       the page's folder on the server, e.g. /www/sticky
+#   SITE_DIR       the page's folder, from the login's home, e.g. www/sticky
 #
 # Run it by hand from the Actions tab (Run workflow) to redeploy a release.
 name: Deploy the setup page
@@ -80,11 +80,23 @@ jobs:
             [ -n "${!v}" ] || { echo "::error::Secret for $v is not set (see the top of this file)"; exit 1; }
           done
           sudo apt-get -qq update && sudo apt-get -qq install -y lftp > /dev/null
-          # FTP only with TLS: no encryption, no connection (the password never goes
-          # out in clear). SFTP: always encrypted; the host key is accepted on first use.
-          # Uploads the staged folder over the old files; nothing else on the server is touched.
-          lftp --env-password -u "$SITE_USER" "$SITE_URL" -e "
-            set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set sftp:auto-confirm yes;
-            set net:max-retries 2; set net:timeout 30;
-            mirror --reverse --verbose build/upload/sticky '$SITE_DIR';
-            quit"
+          # Always encrypted: SFTP. An ftp:// address is tried over SFTP on the same
+          # host, then on OVH's ssh. name for it (ftp.clusterN… → ssh.clusterN…),
+          # with the same login. SFTP starts in the home folder, where FTP's root
+          # is: /www/sticky becomes www/sticky. The host key is accepted on first use.
+          HOST=$(printf '%s' "$SITE_URL" | sed -E 's#^[a-z]+://##; s#/.*$##')
+          DIR=${SITE_DIR#/}
+          CANDIDATES="$HOST"
+          case "$HOST" in ftp.*) CANDIDATES="$HOST ssh.${HOST#ftp.}" ;; esac
+          for H in $CANDIDATES; do
+            echo "Trying SFTP on the server (candidate $((++n)))"
+            if lftp --env-password -u "$SITE_USER" "sftp://$H" -e "
+                set sftp:auto-confirm yes; set net:max-retries 1; set net:timeout 20;
+                mirror --reverse --verbose build/upload/sticky '$DIR';
+                quit"; then
+              echo "Uploaded."
+              exit 0
+            fi
+          done
+          echo "::error::SFTP login failed on every candidate host"
+          exit 1
