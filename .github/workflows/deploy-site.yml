@@ -7,7 +7,7 @@
 #
 # The server login lives only in this repository's secrets (Settings ›
 # Secrets and variables › Actions), set by the owner:
-#   SITE_URL       ftp://ftp.example.net or sftp://ssh.example.net
+#   SITE_URL       ftp://ftp.example.net (needs FTP over TLS) or sftp://ssh.example.net
 #   SITE_USER      the FTP/SFTP user
 #   SITE_PASSWORD  its password
 #   SITE_DIR       the page's folder on the server, e.g. /www/sticky
@@ -77,10 +77,11 @@ jobs:
             [ -n "${!v}" ] || { echo "::error::Secret for $v is not set (see the top of this file)"; exit 1; }
           done
           sudo apt-get -qq update && sudo apt-get -qq install -y lftp > /dev/null
-          # TLS when the server offers it (FTP), host key accepted on first use (SFTP).
+          # FTP only with TLS: no encryption, no connection (the password never goes
+          # out in clear). SFTP: always encrypted; the host key is accepted on first use.
           # Uploads the staged folder over the old files; nothing else on the server is touched.
           lftp --env-password -u "$SITE_USER" "$SITE_URL" -e "
-            set ftp:ssl-allow yes; set ssl:verify-certificate yes; set sftp:auto-confirm yes;
+            set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set sftp:auto-confirm yes;
             set net:max-retries 2; set net:timeout 30;
             mirror --reverse --verbose build/upload/sticky '$SITE_DIR';
             quit"
