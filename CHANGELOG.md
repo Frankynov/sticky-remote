@@ -3,6 +3,11 @@
 Each version's first list is what the Sticky shows on its update screen
 (short lines, plain characters); web/build.sh puts it in the update manifest.
 
+## 0.7.1
+
+- Updating shows a progress bar, then "Update done" before it restarts.
+- An update started from Home Assistant shows on the Sticky too.
+
 ## 0.7.0
 
 - Updates from the Sticky: tap "Update" in the status bar, read what's new, install.

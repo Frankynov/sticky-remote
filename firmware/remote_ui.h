@@ -86,6 +86,7 @@ inline int tile_x(int i, int n) { return M + i * (tile_w(n) + TILE_GAP); }
 #define ICON_HOME_ASSISTANT "\U000F07D0"
 #define ICON_WIFI_SYNC "\U000F16C7"
 #define ICON_DOWNLOAD "\U000F01DA"
+#define ICON_CHECK_CIRCLE "\U000F05E0"
 
 // --- State ------------------------------------------------------------------
 struct Light {
@@ -138,7 +139,8 @@ struct Model {
   std::string update_version;     // newer one available, or empty
   std::string update_notes;       // its changes, one per line (the manifest's summary)
   bool update_prompt = false;     // the update screen is up
-  enum class Upd : uint8_t { IDLE, INSTALLING, FAILED } update_step = Upd::IDLE;
+  enum class Upd : uint8_t { IDLE, INSTALLING, DONE, FAILED } update_step = Upd::IDLE;
+  int update_progress = -1;       // 0..100 while installing, -1: not known yet
   int dow = 0, day = 0, month = 0;   // the local date, for the sleep clock (0: unknown)
   Page page = Page::REMOTE;   // always Remote since 0.5.0 (one page); kept for the engine's API
   bool state_seen = false;
@@ -1080,17 +1082,29 @@ constexpr int UPD_INSTALL_Y = 560, UPD_CLOSE_Y = 652, UPD_BTN_H = 72;
 inline bool update_can_install(const Model &m) { return m.usb || std::isnan(m.battery) || m.battery >= 30; }
 
 inline void draw_update(Ctx &c, const Model &m) {
-  const bool busy = m.update_step == Model::Upd::INSTALLING;
-  c.it.print(W / 2, 34, c.f.t30, c.ink, TextAlign::TOP_CENTER, busy ? "Updating…" : "Update available");
+  const bool done = m.update_step == Model::Upd::DONE;
+  const bool busy = m.update_step == Model::Upd::INSTALLING || done;
+  c.it.print(W / 2, 34, c.f.t30, c.ink, TextAlign::TOP_CENTER,
+             done ? "Update done" : busy ? "Updating…" : "Update available");
   print_fit(c, W / 2, 92, c.f.t26, c.ink, TextAlign::TOP_CENTER, "Sticky Remote " + m.update_version, W - 2 * M - 20);
   if (!m.fw_version.empty())
     print_fit(c, W / 2, 128, c.f.t20, c.ink, TextAlign::TOP_CENTER, "This one runs " + m.fw_version, W - 2 * M - 20);
   const int tx = M + 24, tw = W - 2 * M - 48;
   if (busy) {
-    c.it.print(W / 2, 290, c.f.i120, c.ink, TextAlign::CENTER, ICON_DOWNLOAD);
-    print_wrapped(c, tx, 380, c.f.t20, c.ink,
-                  "Downloading from GitHub and installing. Leave it be: the screen stays like this until it "
-                  "restarts by itself, in about a minute.", tw, 28);
+    c.it.print(W / 2, 270, c.f.i120, c.ink, TextAlign::CENTER, done ? ICON_CHECK_CIRCLE : ICON_DOWNLOAD);
+    // Progress: a bar like the seek bar, filled as the download goes.
+    const int bx = M + 30, bw = W - 2 * M - 60, by = 390, bh = 30;
+    const int pct = done ? 100 : std::max(0, m.update_progress);
+    stroke_rrect(c, bx, by, bw, bh, bh / 2, 3);
+    if (pct > 0) fill_rrect(c, bx + 6, by + 6, std::max(bh - 12, (bw - 12) * pct / 100), bh - 12, (bh - 12) / 2, c.ink);
+    char buf[48];
+    if (done) snprintf(buf, sizeof buf, "Restarting into %s…", m.update_version.c_str());
+    else if (m.update_progress < 0) snprintf(buf, sizeof buf, "Connecting to GitHub…");
+    else snprintf(buf, sizeof buf, "Downloading and installing · %d %%", pct);
+    print_fit(c, W / 2, by + bh + 24, c.f.t22, c.ink, TextAlign::TOP_CENTER, buf, W - 2 * M - 20);
+    print_wrapped(c, tx, 520, c.f.t20, c.ink,
+                  done ? "It comes back in a few seconds, with its settings."
+                       : "About half a minute. Leave it be: it restarts by itself when it's done.", tw, 28);
     return;
   }
   // What's new: one item per line, as many as fit above the note.
@@ -1405,6 +1419,11 @@ inline void apply(const std::string &key, const std::string &v) {
     if (notes == m.update_notes) return;
     m.update_notes = notes;
     if (!m.update_prompt) return;
+  } else if (key == "update_progress") {   // the installer, or "done"
+    m.update_prompt = true;
+    if (v == "done") m.update_step = Model::Upd::DONE;
+    else { m.update_step = Model::Upd::INSTALLING; m.update_progress = (int) to_float(v); }
+    return request();
   } else if (key == "update_failed") {
     m.update_step = Model::Upd::FAILED;
     m.update_prompt = true;

@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.7.0"
+  firmware_version: "0.7.1"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -131,6 +131,7 @@ esphome:
             remote_ui::apply("fw_version", "${firmware_version}");
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
+            sticky::panel() = id(epd);
             // Subscribe to the chosen entities before the API connects.
             sticky::subscribe(api::global_api_server);
             // Bridge from the shared input code (remote_ui.h) to the HA scripts below.
@@ -219,8 +220,23 @@ ota:
   - platform: esphome
     password: "${ota_password}"
   # Updates from the GitHub release (the update entity below), on a tap or from HA.
+  # The download holds the main loop, which normally drives the panel, so the
+  # progress callbacks (about one a second, on that same loop) draw the bar
+  # themselves: a partial refresh every 20 %, then "Update done" before the
+  # reboot. An install started from Home Assistant shows the same way.
   - platform: http_request
     id: ota_github
+    on_begin:
+      - lambda: 'sticky::ota_paint("-1");'
+    on_progress:
+      - lambda: |-
+          static int shown = -1;
+          const int step = (int) (x / 20.0f) * 20;
+          if (step == shown) return;
+          shown = step;
+          sticky::ota_paint(std::to_string(step));
+    on_end:
+      - lambda: 'sticky::ota_paint("done");'
 
 # Checks the latest GitHub release's manifest (in a task of its own, so the
 # Sticky never waits on it) after each start and every 6 hours. Home
@@ -883,7 +899,7 @@ font:
   - file: fonts/materialdesignicons-webfont.ttf
     id: i120
     size: 120
-    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2", "\U000F01DA"]   # movie, tv-off, home-assistant, sleep, download
+    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2", "\U000F01DA", "\U000F05E0"]   # movie, tv-off, home-assistant, sleep, download, check-circle
   # The sleep clock: digits only, one per typeface.
   - file: fonts/Inter-Bold.ttf
     id: clock_inter

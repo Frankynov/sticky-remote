@@ -30,6 +30,7 @@
 #include <JPEGDEC.h>
 
 #include "esphome/components/api/api_server.h"
+#include "esphome/components/epaper_spi/epaper_spi.h"
 #include "esphome/components/json/json_util.h"
 #include "esphome/components/logger/logger.h"
 #include "esphome/components/online_image/online_image.h"
@@ -773,6 +774,35 @@ inline void restore_wifi() {
   ap.set_password(s.password);
   esphome::wifi::global_wifi_component->set_sta(ap);
   ESP_LOGI("sticky", "Wi-Fi: using the saved network %s", s.ssid);
+}
+
+// --- Drawing during an OTA ----------------------------------------------------------
+// The HTTP OTA downloads on the main loop, which also runs the panel's state
+// machine, so nothing would be drawn until the reboot. Its progress callbacks
+// come on that loop, about once a second: ota_paint() sets the update
+// screen's state and runs one panel refresh to the end right there (about a
+// second for a partial), then the download goes on.
+inline esphome::epaper_spi::EPaperBase *&panel() {
+  static esphome::epaper_spi::EPaperBase *p = nullptr;
+  return p;
+}
+
+inline void ota_paint(const std::string &progress) {
+  remote_ui::apply("update_progress", progress);
+  auto *d = panel();
+  if (d == nullptr) return;
+  auto finish = [d]() {
+    const uint32_t t0 = esphome::millis();
+    while (d->is_updating() && esphome::millis() - t0 < 5000) {
+      d->loop();
+      esphome::App.feed_wdt();
+      esphome::delay(1);
+    }
+  };
+  finish();                          // one already under way
+  remote_ui::redraw().dirty = false;  // drawn here, not by the scheduler
+  d->update();
+  finish();
 }
 
 /// Set by the YAML: forgets that Home Assistant was ever connected.

@@ -30,7 +30,7 @@ ICONS = [
     0xF0AE2, 0xF0AE3, 0xF0769, 0xF17C7,                     # star, ceiling light
     0xF0335, 0xF0336, 0xF08DD, 0xF17C8,                     # bulb, floor lamp
     0xF0D2A, 0xF0D71, 0xF0143, 0xF0140, 0xF0141, 0xF0142,   # skip, chevrons
-    0xF083B, 0xF07D0, 0xF16C7, 0xF01DA,                     # tv-off, home-assistant, wifi-sync, download
+    0xF083B, 0xF07D0, 0xF16C7, 0xF01DA, 0xF05E0,            # tv-off, home-assistant, wifi-sync, download, check-circle
 ]
 ICON_FONTS = {f"i{n}": (ICON_TTF, n, [chr(c) for c in ICONS]) for n in (24, 40, 52, 64, 120)}
 SETS = json.loads((ROOT / "firmware" / "fonts" / "sets.json").read_text())
