@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.6.0"
+  firmware_version: "0.6.1"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -328,6 +328,9 @@ switch:
     name: "Clock while asleep"
     icon: mdi:clock-outline
     entity_category: config
+    # Never "restore": ESPHome's default (ALWAYS_OFF) runs the off action at
+    # every boot, which turned the clock off at every wake from deep sleep.
+    restore_mode: DISABLED
     lambda: 'return sticky::clock_on();'
     turn_on_action:
       - lambda: 'sticky::set_clock(true); id(sleep_clock).publish_state(true);'
@@ -606,6 +609,7 @@ interval:
             if (id(epd).is_updating()) return;
             if (remote_ui::redraw().dirty) goto refresh;
             const auto woke = sticky::doze(600);
+            if (woke == sticky::Woke::REJECTED) return;   // logged; tried again next tick
             auto t = id(ha_time).now();
             if (woke != sticky::Woke::TIMER) return id(wake_up).execute();
             if (t.is_valid()) {

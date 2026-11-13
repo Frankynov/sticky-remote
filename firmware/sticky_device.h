@@ -215,7 +215,7 @@ inline void set_clock(bool on) {
   remote_ui::apply("sleep_clock", on ? "1" : "0");
 }
 
-enum class Woke { TIMER, BUTTON, USB, OTHER };
+enum class Woke { TIMER, BUTTON, USB, OTHER, REJECTED };
 
 /// Light sleep until the next whole minute (at most `max_s` seconds), a button
 /// (low on GPIO4/5/6) or USB power (high on GPIO9). Wi-Fi must be off first.
@@ -232,13 +232,23 @@ inline Woke doze(uint32_t max_s) {
   gpio_wakeup_enable(GPIO_NUM_9, GPIO_INTR_HIGH_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_timer_wakeup((uint64_t) s * 1000000ULL + 200000ULL);   // just past the minute mark
-  esp_light_sleep_start();
+  const esp_err_t err = esp_light_sleep_start();
   const auto cause = esp_sleep_get_wakeup_cause();
+  if (err != ESP_OK) {
+    // Refused (a wake source already active, or the chip's state): say why,
+    // wait a little so the loop doesn't spin, and let the caller try again.
+    ESP_LOGW("sticky", "light sleep refused: %s", esp_err_to_name(err));
+    vTaskDelay(pdMS_TO_TICKS(2000));
+  } else {
+    ESP_LOGD("sticky", "dozed %u s, woke by %s", (unsigned) s,
+             cause == ESP_SLEEP_WAKEUP_TIMER ? "the timer" : cause == ESP_SLEEP_WAKEUP_GPIO ? "a pin" : "something else");
+  }
   // Leave nothing armed: deep sleep (clock off) sets up its own wake sources.
   for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9}) gpio_wakeup_disable(pin);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
   esphome::App.feed_wdt();
+  if (err != ESP_OK) return Woke::REJECTED;
   if (cause == ESP_SLEEP_WAKEUP_TIMER) return Woke::TIMER;
   if (cause == ESP_SLEEP_WAKEUP_GPIO) return gpio_get_level(GPIO_NUM_9) ? Woke::USB : Woke::BUTTON;
   return Woke::OTHER;
