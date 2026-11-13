@@ -136,6 +136,7 @@ struct Model {
   // Firmware updates from the GitHub release (the firmware's update entity).
   std::string fw_version;         // running
   std::string update_version;     // newer one available, or empty
+  std::string update_notes;       // its changes, one per line (the manifest's summary)
   bool update_prompt = false;     // the update screen is up
   enum class Upd : uint8_t { IDLE, INSTALLING, FAILED } update_step = Upd::IDLE;
   int dow = 0, day = 0, month = 0;   // the local date, for the sleep clock (0: unknown)
@@ -1080,24 +1081,52 @@ inline bool update_can_install(const Model &m) { return m.usb || std::isnan(m.ba
 
 inline void draw_update(Ctx &c, const Model &m) {
   const bool busy = m.update_step == Model::Upd::INSTALLING;
-  c.it.print(W / 2, 40, c.f.t30, c.ink, TextAlign::TOP_CENTER, busy ? "Updating…" : "Update available");
-  c.it.print(W / 2, 190, c.f.i120, c.ink, TextAlign::CENTER, ICON_DOWNLOAD);
-  print_fit(c, W / 2, 278, c.f.t26, c.ink, TextAlign::TOP_CENTER, "Sticky Remote " + m.update_version, W - 2 * M - 20);
+  c.it.print(W / 2, 34, c.f.t30, c.ink, TextAlign::TOP_CENTER, busy ? "Updating…" : "Update available");
+  print_fit(c, W / 2, 92, c.f.t26, c.ink, TextAlign::TOP_CENTER, "Sticky Remote " + m.update_version, W - 2 * M - 20);
   if (!m.fw_version.empty())
-    print_fit(c, W / 2, 314, c.f.t20, c.ink, TextAlign::TOP_CENTER, "This one runs " + m.fw_version, W - 2 * M - 20);
-  int y = 360;
+    print_fit(c, W / 2, 128, c.f.t20, c.ink, TextAlign::TOP_CENTER, "This one runs " + m.fw_version, W - 2 * M - 20);
+  const int tx = M + 24, tw = W - 2 * M - 48;
   if (busy) {
-    print_wrapped(c, M + 24, y, c.f.t20, c.ink,
+    c.it.print(W / 2, 290, c.f.i120, c.ink, TextAlign::CENTER, ICON_DOWNLOAD);
+    print_wrapped(c, tx, 380, c.f.t20, c.ink,
                   "Downloading from GitHub and installing. Leave it be: the screen stays like this until it "
-                  "restarts by itself, in about a minute.", W - 2 * M - 48, 28);
+                  "restarts by itself, in about a minute.", tw, 28);
     return;
   }
-  y = print_wrapped(c, M + 24, y, c.f.t20, c.ink,
-                    "Downloads from the GitHub release and installs in about a minute. Wi-Fi, settings and the "
-                    "Home Assistant pairing are kept.", W - 2 * M - 48, 28);
-  if (m.update_step == Model::Upd::FAILED)
-    print_wrapped(c, M + 24, y + 12, c.f.t20, c.ink, "The last try failed (download or check). Nothing changed.",
-                  W - 2 * M - 48, 28);
+  // What's new: one item per line, as many as fit above the note.
+  const int note_y = m.update_step == Model::Upd::FAILED ? 476 : 504;
+  int y = 186;
+  if (!m.update_notes.empty()) {
+    c.it.print(tx, y, c.f.t20, c.ink, TextAlign::TOP_LEFT, "What's new");
+    y += 32;
+    size_t start = 0;
+    bool cut = false;
+    while (start < m.update_notes.size()) {
+      size_t end = m.update_notes.find('\n', start);
+      if (end == std::string::npos) end = m.update_notes.size();
+      std::string item = m.update_notes.substr(start, end - start);
+      start = end + 1;
+      while (!item.empty() && (item[0] == '-' || item[0] == ' ' || item[0] == '*')) item.erase(0, 1);
+      if (item.empty()) continue;
+      // Measure first: an item that would run into the note is left out.
+      int lines = 1, w = 0;
+      for (size_t i = 0, sp = 0; i <= item.size(); i++)
+        if (i == item.size() || item[i] == ' ') {
+          const int ww = text_width(c, c.f.t18, item.substr(sp, i - sp).c_str()) + 6;
+          if (w + ww > tw - 18 && w > 0) { lines++; w = 0; }
+          w += ww;
+          sp = i + 1;
+        }
+      if (y + lines * 23 > note_y - 36) { cut = true; break; }   // a line kept for "and more"
+      c.it.filled_circle(tx + 4, y + 11, 3, c.ink);
+      y = print_wrapped(c, tx + 18, y, c.f.t18, c.ink, item, tw - 18, 23) + 5;
+    }
+    if (cut) c.it.print(tx + 18, y, c.f.t18, c.ink, TextAlign::TOP_LEFT, "… and more on GitHub");
+  }
+  print_wrapped(c, tx, note_y, c.f.t18, c.ink,
+                m.update_step == Model::Upd::FAILED ? "The last try failed (download or check). Nothing changed."
+                                                    : "About a minute. Wi-Fi, settings and pairing are kept.",
+                tw, 23);
   const int bx = M + 30, bw = W - 2 * M - 60;
   if (update_can_install(m)) {
     fill_rrect(c, bx, UPD_INSTALL_Y, bw, UPD_BTN_H, 18, c.ink);
@@ -1371,6 +1400,11 @@ inline void apply(const std::string &key, const std::string &v) {
     if (v == m.update_version) return;
     m.update_version = v;
     if (v.empty()) m.update_prompt = false;
+  } else if (key == "update_notes") {
+    const std::string notes = clean(v);
+    if (notes == m.update_notes) return;
+    m.update_notes = notes;
+    if (!m.update_prompt) return;
   } else if (key == "update_failed") {
     m.update_step = Model::Upd::FAILED;
     m.update_prompt = true;

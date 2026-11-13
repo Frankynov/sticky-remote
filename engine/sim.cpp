@@ -59,6 +59,8 @@ int main(int argc, char **argv) {
       ss >> key;
       std::getline(ss, value);
       if (!value.empty() && value[0] == ' ') value.erase(0, 1);
+      for (size_t i = value.find("\\n"); i != std::string::npos; i = value.find("\\n", i + 1))
+        value.replace(i, 2, "\n");   // one command per line: "\n" stands for a line break
       sc_set(key.c_str(), value.c_str());
     } else if (cmd == "labels") {  // labels <room>|<light 1>|<light 2>|<app button>|<player>
       std::string rest, part;

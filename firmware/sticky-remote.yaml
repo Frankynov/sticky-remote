@@ -705,8 +705,11 @@ interval:
             remote_ui::apply("date", d);
           }
           remote_ui::minute_tick(t.is_valid(), t.hour, t.minute, t.timestamp);
-          remote_ui::apply("update_version", id(fw_update).state == update::UPDATE_STATE_AVAILABLE
-                                                 ? id(fw_update).update_info.latest_version : std::string());
+          {
+            const bool avail = id(fw_update).state == update::UPDATE_STATE_AVAILABLE;
+            remote_ui::apply("update_notes", avail ? id(fw_update).update_info.summary : std::string());
+            remote_ui::apply("update_version", avail ? id(fw_update).update_info.latest_version : std::string());
+          }
       # Put to sleep on USB, it stayed awake (USB wakes it); unplugged, it sleeps for real.
       - if:
           condition:

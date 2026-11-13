@@ -38,24 +38,22 @@ echo "▸ Firmware: web/firmware/$FILE ($SIZE bytes)"
 OTA="sticky-remote-$VERSION.ota.bin"
 cp "$(dirname "$BIN")/firmware.ota.bin" "web/firmware/$OTA"
 MD5=$(md5 -q "web/firmware/$OTA")
-REL="https://github.com/Frankynov/sticky-remote/releases"
-cat > web/firmware/ota-manifest.json <<JSON
-{
-  "name": "Sticky Remote",
-  "version": "$VERSION",
-  "builds": [
-    {
-      "chipFamily": "ESP32-S3",
-      "ota": {
-        "path": "$REL/download/v$VERSION/$OTA",
-        "md5": "$MD5",
-        "release_url": "$REL/tag/v$VERSION",
-        "summary": "Sticky Remote $VERSION"
-      }
-    }
-  ]
-}
-JSON
+# The update screen's "What's new": this version's list in CHANGELOG.md.
+python3 - "$VERSION" "$OTA" "$MD5" <<'PY'
+import json, re, sys
+from pathlib import Path
+version, ota, md5 = sys.argv[1:4]
+text = Path("CHANGELOG.md").read_text()
+m = re.search(rf"^## {re.escape(version)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+items = [l[2:].strip() for l in (m[1] if m else "").splitlines() if l.startswith("- ")]
+if not items:
+    sys.exit(f"CHANGELOG.md has no list for {version}")
+rel = "https://github.com/Frankynov/sticky-remote/releases"
+manifest = {"name": "Sticky Remote", "version": version, "builds": [{"chipFamily": "ESP32-S3", "ota": {
+    "path": f"{rel}/download/v{version}/{ota}", "md5": md5, "release_url": f"{rel}/tag/v{version}",
+    "summary": "\n".join(items)}}]}
+Path("web/firmware/ota-manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+PY
 echo "▸ OTA: web/firmware/$OTA + ota-manifest.json (release assets for v$VERSION)"
 
 # The device previews: the build's exact glyphs, and screens rendered by the
