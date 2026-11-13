@@ -728,6 +728,47 @@ inline uint32_t &restart_at() {
   return t;
 }
 
+// --- The Wi-Fi network sent over USB --------------------------------------------
+// ESPHome keeps the network it was given at runtime under a key that depends
+// on the build (with a network in the config) or a fixed one (without): the
+// placeholder network in wifi-setup.yaml moved it, and 0.6.0/0.6.1 forgot the
+// network 0.5.x had saved. A copy under a key of our own survives any build;
+// restore_wifi() hands it to ESPHome before Wi-Fi starts, taking the old
+// fixed key's network over as it goes.
+inline esphome::ESPPreferenceObject &wifi_copy_pref() {
+  static esphome::ESPPreferenceObject p =
+      esphome::global_preferences->make_preference<esphome::wifi::SavedWifiSettings>(0x53574946, true);
+  return p;
+}
+
+inline void save_wifi(const std::string &ssid, const std::string &pass) {
+  esphome::wifi::global_wifi_component->save_wifi_sta(ssid, pass);
+  esphome::wifi::SavedWifiSettings s{};
+  snprintf(s.ssid, sizeof s.ssid, "%s", ssid.c_str());
+  snprintf(s.password, sizeof s.password, "%s", pass.c_str());
+  wifi_copy_pref().save(&s);
+  esphome::global_preferences->sync();
+}
+
+/// Before Wi-Fi starts: the network saved over USB replaces the configured one.
+inline void restore_wifi() {
+  esphome::wifi::SavedWifiSettings s{};
+  bool have = wifi_copy_pref().load(&s) && s.ssid[0] != '\0';
+  if (!have) {   // saved by 0.5.x, under ESPHome's key for a config without networks
+    auto legacy = esphome::global_preferences->make_preference<esphome::wifi::SavedWifiSettings>(88491487UL, true);
+    have = legacy.load(&s) && s.ssid[0] != '\0';
+    if (have) wifi_copy_pref().save(&s);
+  }
+  if (!have) return;
+  s.ssid[sizeof s.ssid - 1] = '\0';
+  s.password[sizeof s.password - 1] = '\0';
+  esphome::wifi::WiFiAP ap;
+  ap.set_ssid(s.ssid);
+  ap.set_password(s.password);
+  esphome::wifi::global_wifi_component->set_sta(ap);
+  ESP_LOGI("sticky", "Wi-Fi: using the saved network %s", s.ssid);
+}
+
 /// Set by the YAML: forgets that Home Assistant was ever connected.
 inline std::function<void()> &unpair_hook() {
   static std::function<void()> f;
@@ -753,7 +794,7 @@ inline void handle(const std::string &line) {
       const std::string ssid = wifi["ssid"].as<const char *>();
       const std::string pass = wifi["pass"] | "";
       if (ssid.empty() || ssid.size() > 32 || pass.size() > 64) return send_error("Wi-Fi name or password too long.");
-      esphome::wifi::global_wifi_component->save_wifi_sta(ssid, pass);
+      save_wifi(ssid, pass);
     }
     if (!in.isNull() && in["touch_sound"].is<const char *>()) {
       const std::string level = in["touch_sound"].as<const char *>();

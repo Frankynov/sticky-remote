@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.6.1"
+  firmware_version: "0.6.2"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -127,6 +127,7 @@ esphome:
             sticky::load_sleep();
             sticky::load_clock();
             sticky::keep_scan_results();
+            sticky::restore_wifi();   // before Wi-Fi starts (its setup runs later)
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
             // Subscribe to the chosen entities before the API connects.
