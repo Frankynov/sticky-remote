@@ -162,6 +162,13 @@ renders `web/previews/`, then stages everything that goes online in
   `releases/latest/download/ota-manifest.json`, so the manifest must be on
   the latest release and point at that release's OTA image (build.sh writes
   it that way).
+- **Deploying is automatic:** publishing a release runs
+  `.github/workflows/deploy-site.yml`. It takes the page from the release's
+  tag and the firmware image from the release, checks the image against the
+  SHA-256 and size in `manifest.json`, stages it with `stage.sh` and uploads
+  it with lftp (FTP with TLS when offered, or SFTP). The server login is in
+  the repository's secrets (`SITE_URL`, `SITE_USER`, `SITE_PASSWORD`,
+  `SITE_DIR`); the Actions tab can redeploy any release by hand.
 - `python3 web/serve_local.py` serves the page locally without caching.
 - `web/check_preview.py` compares the page's JS drawing with the firmware's
   render for the cases in `check_cases.json` (they should differ by 0 pixels).

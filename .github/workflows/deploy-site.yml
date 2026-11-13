@@ -1,0 +1,86 @@
+# Puts the setup page online (frankynov.ovh/sticky) when a release is
+# published, with that release's firmware: no more uploading by hand.
+#
+# The firmware image comes from the release and is checked against the
+# SHA-256 and size in web/firmware/manifest.json at the release's tag before
+# anything is uploaded. The page's own files come from the same tag.
+#
+# The server login lives only in this repository's secrets (Settings ›
+# Secrets and variables › Actions), set by the owner:
+#   SITE_URL       ftp://ftp.example.net or sftp://ssh.example.net
+#   SITE_USER      the FTP/SFTP user
+#   SITE_PASSWORD  its password
+#   SITE_DIR       the page's folder on the server, e.g. /www/sticky
+#
+# Run it by hand from the Actions tab (Run workflow) to redeploy a release.
+name: Deploy the setup page
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy (empty: the latest release)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Which release
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          echo "Deploying $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Firmware from the release, checked against manifest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          M=web/firmware/manifest.json
+          VERSION=$(jq -r .version "$M"); FILE=$(jq -r .file "$M")
+          [ "v$VERSION" = "$TAG" ] || { echo "::error::manifest.json says $VERSION, the release is $TAG"; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$FILE" --dir web/firmware
+          echo "$(jq -r .sha256 "$M")  web/firmware/$FILE" | sha256sum -c -
+          [ "$(stat -c%s "web/firmware/$FILE")" = "$(jq -r .size "$M")" ] || { echo "::error::size differs from manifest.json"; exit 1; }
+
+      - name: Stage the page
+        run: web/stage.sh
+
+      - name: Upload to the server
+        env:
+          SITE_URL: ${{ secrets.SITE_URL }}
+          SITE_USER: ${{ secrets.SITE_USER }}
+          LFTP_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+          SITE_DIR: ${{ secrets.SITE_DIR }}
+        run: |
+          for v in SITE_URL SITE_USER LFTP_PASSWORD SITE_DIR; do
+            [ -n "${!v}" ] || { echo "::error::Secret for $v is not set (see the top of this file)"; exit 1; }
+          done
+          sudo apt-get -qq update && sudo apt-get -qq install -y lftp > /dev/null
+          # TLS when the server offers it (FTP), host key accepted on first use (SFTP).
+          # Uploads the staged folder over the old files; nothing else on the server is touched.
+          lftp --env-password -u "$SITE_USER" "$SITE_URL" -e "
+            set ftp:ssl-allow yes; set ssl:verify-certificate yes; set sftp:auto-confirm yes;
+            set net:max-retries 2; set net:timeout 30;
+            mirror --reverse --verbose build/upload/sticky '$SITE_DIR';
+            quit"
