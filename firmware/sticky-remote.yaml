@@ -581,7 +581,18 @@ script:
                 wifi::global_wifi_component->disable();
                 id(dozing) = true;
           else:
-            - logger.log: "Going to deep sleep (on USB it waits, showing the face, until unplugged or a button)"
+            # On USB it can't deep-sleep: keep the face up and the buttons live
+            # (hold_pins_for_sleep hands them to the RTC, where the firmware no
+            # longer sees them) until the cable goes. A button press stops
+            # this script (wake_up).
+            - if:
+                condition:
+                  binary_sensor.is_on: usb_power
+                then:
+                  - logger.log: "On USB: showing the asleep face until unplugged or a button is pressed"
+                  - wait_until:
+                      binary_sensor.is_off: usb_power
+            - logger.log: Going to deep sleep
             - lambda: |-
                 id(deep_sleep_ctl).allow_deep_sleep();
                 remote_ui::hold_pins_for_sleep();
