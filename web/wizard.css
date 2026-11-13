@@ -50,6 +50,11 @@ b, strong { font-weight: 600; }
 .top h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
 .top p { margin: 0; color: var(--mute); font-size: 14px; }
 .top-in > div { flex: 1; min-width: 220px; }
+.top .home { color: inherit; text-decoration: none; }
+.top .home:hover { text-decoration: underline; text-underline-offset: 3px; }
+.home-logo { display: block; line-height: 0; }
+.fw-src { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 6px 0 4px; }
+.fw-src span { flex: 1; min-width: 200px; }
 .top .source { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 14px; font-weight: 500;
                text-decoration: none; border: 1px solid var(--line); background: var(--card); box-shadow: var(--shadow);
                height: 36px; padding: 0 14px; border-radius: var(--r-sm); white-space: nowrap; transition: background .15s; }
@@ -117,7 +122,7 @@ button.big { font-size: 15px; min-height: 44px; padding: 0 22px; }
 /* Fields */
 label.field { display: block; margin: 14px 0; }
 label.field > span, div.field > span { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; }
-label.field small { display: block; color: var(--mute); font-size: 13px; margin-top: 5px; }
+label.field small, div.field small { display: block; color: var(--mute); font-size: 13px; margin-top: 5px; }
 /* A checkbox line: box, label, and its hint underneath. */
 label.field:has(> input[type=checkbox]) { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; font-size: 14px; font-weight: 500; }
 label.field:has(> input[type=checkbox]) > small { flex-basis: 100%; padding-left: 24px; font-weight: 400; }
@@ -211,6 +216,7 @@ input[type=checkbox] { width: 16px; height: 16px; margin: 0; accent-color: var(-
 .card h3 { margin: 14px 0 2px; }
 .card .field small { overflow-wrap: anywhere; }
 div.field { margin: 14px 0; }
+code { font: 500 .92em ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--soft); padding: 1px 5px; border-radius: 4px; }
 .seg { display: inline-flex; flex-wrap: wrap; background: var(--soft); border-radius: var(--r-sm); padding: 3px; gap: 2px; max-width: 100%; }
 .seg button { border: none; background: none; box-shadow: none; min-height: 30px; padding: 0 12px; border-radius: 6px; color: var(--mute); }
 .seg button:hover { color: var(--ink); background: none; }

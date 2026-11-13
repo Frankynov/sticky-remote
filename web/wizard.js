@@ -26,6 +26,8 @@ const S = {
   flow: "setup",          // setup | update | settings | wifi (what a set-up Sticky was plugged in for)
   installPanel: false,    // step 1 shows the installer (a new Sticky, an update, a reset)
   eraseAll: true, updated: false, finished: false,
+  custom: null,           // a firmware file chosen on this computer (checkImage), instead of this site's
+  flashing: false,        // writing to the Sticky: leaving the page now would cut it off
   wifi: { ssid: "", pass: "", change: false, busy: false },
   ha: { url: localStorage.getItem("sticky.haURL") || "", remember: !!localStorage.getItem("sticky.haURL"),
         token: "", client: null, states: [], manual: false, location: "" },
@@ -50,6 +52,35 @@ const newer = (a, b) => { // is version a newer than b?
   return false;
 };
 const has = (cap) => !!S.info?.caps?.includes(cap);
+
+// A firmware file from this computer: it must be a full image for the
+// ESP32-S3 (bootloader, partition table and app, written from address 0),
+// the same kind as this site's .factory.bin. The .ota.bin is the app alone,
+// which the Sticky downloads to update itself; written at 0 it wouldn't start.
+function checkImage(buf, name) {
+  const d = new Uint8Array(buf), v = new DataView(buf);
+  const str = (o, n) => new TextDecoder().decode(d.subarray(o, o + n)).replace(/\0.*$/s, "");
+  const APP_DESC = 0xabcd5432;
+  if (d.length < 0x10100 || d[0] !== 0xe9 || v.getUint16(0x8000, true) !== 0x50aa) {
+    if (d.length > 0x100 && d[0] === 0xe9 && v.getUint32(0x20, true) === APP_DESC)
+      throw new Error("That's an update file (.ota.bin), which the Sticky downloads to update itself. Here, choose the full image: the .factory.bin.");
+    throw new Error("That isn't a firmware image for the Sticky. Choose a .factory.bin file.");
+  }
+  if (v.getUint16(12, true) !== 9) throw new Error("That firmware is for another chip, not the Sticky's ESP32-S3.");
+  let app = null;   // the first app partition in the file's own partition table
+  for (let o = 0x8000; o < 0x9000 && v.getUint16(o, true) === 0x50aa; o += 32)
+    if (d[o + 2] === 0 && !app) app = { at: v.getUint32(o + 4, true), size: v.getUint32(o + 8, true) };
+  if (!app || d.length < app.at + 0x100 || v.getUint32(app.at + 0x20, true) !== APP_DESC)
+    throw new Error("That firmware image is incomplete: it has no app in it.");
+  if (d.length - app.at > app.size) throw new Error("That firmware is too big for the Sticky's app space.");
+  const project = str(app.at + 0x50, 32);   // esp_app_desc_t, after the 0x20-byte image header
+  return {
+    name, data: d, project,
+    version: (name.match(/(\d+\.\d+\.\d+)/) || [])[1] || "",
+    built: `${str(app.at + 0x80, 16)} ${str(app.at + 0x70, 16)}`.trim(),
+    ours: project === "sticky-remote",
+  };
+}
 
 function stopTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function go(step) { stopTimers(); S.step = step; render(); window.scrollTo({ top: 0, behavior: "smooth" }); }
@@ -157,12 +188,24 @@ const VIEWS = [
     };
 
     if (S.installPanel) {
-      const fresh = !i;
+      const fresh = !i, c = S.custom;
+      const what = c ? (c.ours ? `Sticky Remote${c.version ? " " + esc(c.version) : ""} from ${esc(c.name)}` : esc(c.name)) : `Sticky Remote ${esc(fw)}`;
+      const title = c ? `Install ${esc(c.name)}` : fresh ? "Install Sticky Remote" : update ? `Update to ${esc(fw)}` : `Reinstall ${esc(fw)}`;
       return {
         html: `
-          <h2>${fresh ? "Install Sticky Remote" : update ? `Update to ${esc(fw)}` : `Reinstall ${esc(fw)}`}</h2>
-          <p class="lead">${fresh ? `Connected. Sticky Remote ${esc(fw)} replaces the firmware on the Sticky.` : `${esc(i.name)} runs ${esc(i.fw)}.`} Keep the cable plugged in until it's done (about a minute).</p>
-          <details ${S.wasConfigured && S.eraseAll ? "open" : ""}><summary>Options</summary>
+          <h2>${title}</h2>
+          <p class="lead">${fresh ? `Connected. ${what} replaces the firmware on the Sticky.` : `${esc(i.name)} runs ${esc(i.fw)}.${c ? ` ${what} replaces it.` : ""}`} Keep the cable plugged in until it's done (about a minute).</p>
+          <details ${(S.wasConfigured && S.eraseAll) || S.pickFile || c ? "open" : ""}><summary>Options</summary>
+            <div class="field"><b>Firmware</b>
+              <div class="fw-src">
+                <span id="fw-what">${c ? `${esc(c.name)} · ${(c.data.length / 1048576).toFixed(2)} MB${c.built ? ` · built ${esc(c.built)}` : ""}` : `Sticky Remote ${esc(fw)}, from this site`}</span>
+                <button id="fw-pick">${c ? "Choose Another File" : "Use a File…"}</button>
+                ${c ? `<button class="link" id="fw-clear">Use ${esc(fw)} Instead</button>` : ""}
+              </div>
+              <input type="file" id="fw-file" accept=".bin,application/octet-stream" hidden>
+              <small>A <code>.factory.bin</code> from this computer: a build you made, or another version from the GitHub releases.</small></div>
+            <p id="fw-bad" class="note bad" hidden></p>
+            ${c && !c.ours ? `<p class="note warn">This isn't Sticky Remote firmware (it says “${esc(c.project || "unknown")}”). It installs, but this page can't set it up afterwards.</p>` : ""}
             <label class="field"><input type="checkbox" id="erase" ${S.eraseAll ? "checked" : ""}> Erase everything first
               <small>${S.wasConfigured
                 ? "Not needed for an update. Erasing removes its Wi-Fi, its settings and the key Home Assistant gave it: you'd go through the whole setup and add it to Home Assistant again."
@@ -175,7 +218,7 @@ const VIEWS = [
           <div class="actions">
             <button id="unpick">${i?.configured ? "Back" : "Choose Another Port"}</button>
             ${i && !i.configured ? `<button class="link" id="keepfw">Keep version ${esc(i.fw)}</button>` : ""}
-            <span class="spacer"></span><button class="primary" id="go">${fresh ? "Install" : update ? "Update" : "Reinstall"}</button>
+            <span class="spacer"></span><button class="primary" id="go">${c || fresh ? "Install" : update ? "Update" : "Reinstall"}</button>
           </div>`,
         bind: () => {
           $("#erase").addEventListener("change", (e) => {
@@ -183,8 +226,17 @@ const VIEWS = [
             $("#erase-warn").hidden = !(S.wasConfigured && S.eraseAll);
           });
           $("#go").addEventListener("click", install);
+          $("#fw-pick").addEventListener("click", () => $("#fw-file").click());
+          $("#fw-clear")?.addEventListener("click", () => { S.custom = null; render(); });
+          $("#fw-file").addEventListener("change", async (e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            try { S.custom = checkImage(await f.arrayBuffer(), f.name); render(); }
+            catch (err) { const b = $("#fw-bad"); b.hidden = false; b.textContent = err.message; e.target.value = ""; }
+          });
           $("#keepfw")?.addEventListener("click", () => { S.installPanel = false; fwd(); });
           $("#unpick").addEventListener("click", () => {
+            S.custom = null; S.pickFile = false;
             if (i?.configured) { S.installPanel = false; return render(); }
             S.serial?.close(); S.port = null; S.info = null; render();
           });
@@ -210,6 +262,7 @@ const VIEWS = [
           ${choice("settings", "Change what it controls", "Player, app button, lights, labels and icons, typeface, touch sound." + (update ? " Some options may need the update first." : ""))}
           ${choice("wifi", "Move it to another Wi-Fi", "Pick a network from the ones it sees and check that it joins.")}
           ${choice("reset", update ? "Erase and set up from scratch" : "Reinstall and set up from scratch", "Erases its Wi-Fi, settings and Home Assistant pairing, then runs the whole setup.", "quiet")}
+          ${choice("file", "Install a firmware file", "A .factory.bin from this computer: a build you made, or another version. Keeps its settings.", "quiet")}
         </div>
         ${portRow(false)}`,
       bind: () => {
@@ -751,8 +804,9 @@ function startFlow(flow) {
   S.skipped.clear();
   S.updated = false; S.finished = false;
   S.wifi.change = false;
-  if (flow === "update" || flow === "reset") {
-    S.flow = flow === "update" ? "update" : "setup";
+  S.pickFile = flow === "file";
+  if (flow === "update" || flow === "reset" || flow === "file") {
+    S.flow = flow === "reset" ? "setup" : "update";
     S.eraseAll = flow === "reset";
     S.installPanel = true;
     return render();
@@ -834,20 +888,25 @@ async function install() {
   lock(true);
   try {
     phase.className = "note";
-    phase.textContent = "Downloading the firmware…";
-    const data = DEMO ? null : new Uint8Array(await (await fetch(`firmware/${S.manifest.file}`)).arrayBuffer());
-    if (data && S.manifest.size && data.length !== S.manifest.size) throw new Error("The firmware download is incomplete. Reload the page and try again.");
+    let data = S.custom?.data || null;
+    if (!data && !DEMO) {
+      phase.textContent = "Downloading the firmware…";
+      data = new Uint8Array(await (await fetch(`firmware/${S.manifest.file}`)).arrayBuffer());
+      if (S.manifest.size && data.length !== S.manifest.size) throw new Error("The firmware download is incomplete. Reload the page and try again.");
+    }
     phase.textContent = "Installing… keep the cable plugged in.";
     await S.serial.close();
+    S.flashing = true;
     const opts = { eraseAll: S.eraseAll, onProgress: (p) => { bar.style.width = `${Math.round(p * 100)}%`; }, onLog: addLog };
-    if (DEMO) await demoFlash(opts); else await flash(S.port, data, opts);
+    try { if (DEMO) await demoFlash(opts); else await flash(S.port, data, opts); }
+    finally { S.flashing = false; }
     bar.style.width = "100%";
     phase.textContent = "Installed. Waiting for the Sticky to start…";
-    if (DEMO) { S.serial.finishFlash(S.manifest.version, S.eraseAll); }
+    if (DEMO) { S.serial.finishFlash(S.custom?.version || S.manifest.version, S.eraseAll); }
     else { S.serial = new StickySerial(S.port); await S.serial.open(); }
     S.info = await S.serial.waitForBoard(30000);
     if (!S.info) throw new Error("The Sticky didn't answer after installing. Unplug it, plug it back in, and connect it again.");
-    S.installPanel = false;
+    S.installPanel = false; S.custom = null; S.pickFile = false;
     // An update that kept everything: nothing else to do. Otherwise, on with the setup.
     S.updated = S.wasConfigured && !S.eraseAll && !!S.info.configured;
     if (S.updated) return render();
@@ -919,6 +978,19 @@ async function save() {
 }
 
 // --- Start ----------------------------------------------------------------------------
+// The logo and title go back to the start (keeping ?demo); not while writing
+// to the Sticky, which leaving would cut off halfway.
+document.querySelectorAll(".top a.home, .top a.home-logo").forEach((a) => {
+  a.href = location.pathname + location.search;
+  a.addEventListener("click", (e) => {
+    if (!S.flashing) return;
+    e.preventDefault();
+    const p = $("#phase");
+    if (p) { p.className = "note warn"; p.textContent = "Installing… wait until it's done before leaving this page."; }
+  });
+});
+window.addEventListener("beforeunload", (e) => { if (S.flashing) e.preventDefault(); });
+
 (async () => {
   if (DEMO) {
     $("#demo-badge").hidden = false;
