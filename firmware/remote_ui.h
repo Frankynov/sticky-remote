@@ -85,6 +85,7 @@ inline int tile_x(int i, int n) { return M + i * (tile_w(n) + TILE_GAP); }
 #define ICON_PLAY_PAUSE "\U000F040E"
 #define ICON_HOME_ASSISTANT "\U000F07D0"
 #define ICON_WIFI_SYNC "\U000F16C7"
+#define ICON_DOWNLOAD "\U000F01DA"
 
 // --- State ------------------------------------------------------------------
 struct Light {
@@ -132,6 +133,11 @@ struct Model {
   float battery = NAN;
   bool usb = false;
   bool sleep_clock = true;        // asleep on battery: a clock that ticks every minute
+  // Firmware updates from the GitHub release (the firmware's update entity).
+  std::string fw_version;         // running
+  std::string update_version;     // newer one available, or empty
+  bool update_prompt = false;     // the update screen is up
+  enum class Upd : uint8_t { IDLE, INSTALLING, FAILED } update_step = Upd::IDLE;
   int dow = 0, day = 0, month = 0;   // the local date, for the sleep clock (0: unknown)
   Page page = Page::REMOTE;   // always Remote since 0.5.0 (one page); kept for the engine's API
   bool state_seen = false;
@@ -655,6 +661,11 @@ inline void draw_status(Ctx &c, const Model &m, const char *room, bool time_vali
   c.it.print(x, cy + 1, c.f.i24, c.ink, TextAlign::CENTER_RIGHT,
              wifi ? ICON_WIFI : ICON_WIFI_SYNC);   // HA state is in the text
   x -= 24 + 12;
+  if (!m.update_version.empty() && wifi) {   // tap the bar: the update screen
+    c.it.print(M, cy + 1, c.f.i24, c.ink, TextAlign::CENTER_LEFT, ICON_DOWNLOAD);
+    print_fit(c, M + 30, cy, c.f.t20, c.ink, TextAlign::CENTER_LEFT, "Update " + m.update_version, x - M - 30);
+    return;
+  }
   const char *left = !wifi ? "Joining Wi-Fi…" : !m.online ? "Connecting to HA…" : room;
   print_fit(c, M, cy, c.f.t20, c.ink, TextAlign::CENTER_LEFT, left, x - M);
 }
@@ -1061,6 +1072,44 @@ inline void draw_calibrate(Ctx &c) {
   }
 }
 
+// --- Firmware update screen ----------------------------------------------------
+constexpr int UPD_INSTALL_Y = 560, UPD_CLOSE_Y = 652, UPD_BTN_H = 72;
+
+/// Room to install: on USB, or a battery that can take a minute of Wi-Fi and flash writes.
+inline bool update_can_install(const Model &m) { return m.usb || std::isnan(m.battery) || m.battery >= 30; }
+
+inline void draw_update(Ctx &c, const Model &m) {
+  const bool busy = m.update_step == Model::Upd::INSTALLING;
+  c.it.print(W / 2, 40, c.f.t30, c.ink, TextAlign::TOP_CENTER, busy ? "Updating…" : "Update available");
+  c.it.print(W / 2, 190, c.f.i120, c.ink, TextAlign::CENTER, ICON_DOWNLOAD);
+  print_fit(c, W / 2, 278, c.f.t26, c.ink, TextAlign::TOP_CENTER, "Sticky Remote " + m.update_version, W - 2 * M - 20);
+  if (!m.fw_version.empty())
+    print_fit(c, W / 2, 314, c.f.t20, c.ink, TextAlign::TOP_CENTER, "This one runs " + m.fw_version, W - 2 * M - 20);
+  int y = 360;
+  if (busy) {
+    print_wrapped(c, M + 24, y, c.f.t20, c.ink,
+                  "Downloading from GitHub and installing. Leave it be: the screen stays like this until it "
+                  "restarts by itself, in about a minute.", W - 2 * M - 48, 28);
+    return;
+  }
+  y = print_wrapped(c, M + 24, y, c.f.t20, c.ink,
+                    "Downloads from the GitHub release and installs in about a minute. Wi-Fi, settings and the "
+                    "Home Assistant pairing are kept.", W - 2 * M - 48, 28);
+  if (m.update_step == Model::Upd::FAILED)
+    print_wrapped(c, M + 24, y + 12, c.f.t20, c.ink, "The last try failed (download or check). Nothing changed.",
+                  W - 2 * M - 48, 28);
+  const int bx = M + 30, bw = W - 2 * M - 60;
+  if (update_can_install(m)) {
+    fill_rrect(c, bx, UPD_INSTALL_Y, bw, UPD_BTN_H, 18, c.ink);
+    c.it.print(W / 2, UPD_INSTALL_Y + UPD_BTN_H / 2, c.f.t26, c.paper, TextAlign::CENTER,
+               m.update_step == Model::Upd::FAILED ? "Try again" : "Install");
+  } else {
+    print_wrapped(c, bx, UPD_INSTALL_Y + 6, c.f.t20, c.ink, "Battery low: plug it in to update.", bw, 28);
+  }
+  stroke_rrect(c, bx, UPD_CLOSE_Y, bw, UPD_BTN_H, 18, 3);
+  c.it.print(W / 2, UPD_CLOSE_Y + UPD_BTN_H / 2, c.f.t26, c.ink, TextAlign::CENTER, "Not now");
+}
+
 inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
                         int64_t now_epoch, bool time_valid, int hour, int minute, const char *room,
                         const char *name1, const char *name2, const char *infuse_label,
@@ -1075,6 +1124,7 @@ inline void draw_screen(Ctx &c, const Model &m, const GrayImage &poster,
     case Setup::CALIBRATE: return draw_calibrate(c);
     case Setup::NONE: break;
   }
+  if (m.update_prompt) return draw_update(c, m);
   draw_status(c, m, room, time_valid, hour, minute);
   draw_tiles(c, m, name1, name2, player);
   const Mode mode = m.mode();
@@ -1137,6 +1187,9 @@ enum Action {
   NAV_SELECT,
   NAV_BACK,
   NAV_HOME,
+  UPDATE_OPEN,      // the status bar, when an update is available
+  UPDATE_INSTALL,
+  UPDATE_CLOSE,
 };
 
 // remote.send_command name for each pad action (Apple TV integration).
@@ -1159,6 +1212,13 @@ inline bool in(int x, int y, int x0, int y0, int w, int h) {
 
 inline Action hit(const Model &m, int x, int y, int64_t now_epoch, float &seek_to) {
   if (m.in_setup()) return NONE;
+  if (m.update_prompt) {
+    if (m.update_step == Model::Upd::INSTALLING) return NONE;
+    if (update_can_install(m) && in(x, y, M + 30, UPD_INSTALL_Y - 10, W - 2 * M - 60, UPD_BTN_H + 20)) return UPDATE_INSTALL;
+    if (in(x, y, M + 30, UPD_CLOSE_Y - 10, W - 2 * M - 60, UPD_BTN_H + 20)) return UPDATE_CLOSE;
+    return NONE;
+  }
+  if (!m.update_version.empty() && y < TILE_Y - 6) return UPDATE_OPEN;
   const int n = tile_count(m.light_count);
   for (int i = 0; i < n; i++)
     if (in(x, y, tile_x(i, n) - TILE_GAP / 2, TILE_Y - 6, tile_w(n) + TILE_GAP, TILE_H + 10))   // down to the tabs
@@ -1304,6 +1364,17 @@ inline void apply(const std::string &key, const std::string &v) {
   } else if (key == "configured") {
     m.configured = v == "1";
     return request(true);
+  } else if (key == "fw_version") {
+    m.fw_version = v;
+    return;
+  } else if (key == "update_version") {   // empty: none available
+    if (v == m.update_version) return;
+    m.update_version = v;
+    if (v.empty()) m.update_prompt = false;
+  } else if (key == "update_failed") {
+    m.update_step = Model::Upd::FAILED;
+    m.update_prompt = true;
+    return request(true);
   } else if (key == "sleep_clock") {
     m.sleep_clock = v == "1";
     if (!m.sleeping) return;
@@ -1341,6 +1412,7 @@ struct Actions {
   virtual void open_infuse() = 0;
   virtual void save_touch_cal(const TouchCal &cal) {}   // the firmware stores it
   virtual void sleep() {}                               // the AI button: deep sleep now
+  virtual void install_update() {}                      // download and flash the newer release
 };
 
 inline Actions *&actions() {
@@ -1401,6 +1473,18 @@ inline Action handle_tap(int x, int y, int64_t now_epoch, Actions &act) {
   hold().action = NONE;
   if (a == NONE) return a;
   touched();
+  if (a == UPDATE_OPEN || a == UPDATE_CLOSE || a == UPDATE_INSTALL) {
+    act.click();
+    if (a == UPDATE_INSTALL) {
+      m.update_step = Model::Upd::INSTALLING;
+      act.install_update();
+    } else {
+      m.update_prompt = a == UPDATE_OPEN;
+      if (m.update_step == Model::Upd::FAILED && a == UPDATE_CLOSE) m.update_step = Model::Upd::IDLE;
+    }
+    request(true);
+    return a;
+  }
   if (repeats(a)) hold() = Hold{a, esphome::millis(), esphome::millis()};
   act.click();
   if (m.mode() != Mode::OFF) {

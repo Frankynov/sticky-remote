@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.6.3"
+  firmware_version: "0.7.0"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -128,6 +128,7 @@ esphome:
             sticky::load_clock();
             sticky::keep_scan_results();
             sticky::restore_wifi();   // before Wi-Fi starts (its setup runs later)
+            remote_ui::apply("fw_version", "${firmware_version}");
             sticky::apply_to_ui();
             sticky::poster() = id(poster);
             // Subscribe to the chosen entities before the API connects.
@@ -150,6 +151,7 @@ esphome:
               void open_infuse() override { id(atv_open_infuse).execute(); }
               void save_touch_cal(const remote_ui::TouchCal &c) override { sticky::save_touch_cal(c); }
               void sleep() override { id(go_to_sleep).execute(); }
+              void install_update() override { id(install_firmware).execute(); }
             };
             static EspActions esp_actions;
             remote_ui::actions() = &esp_actions;
@@ -216,6 +218,21 @@ api:
 ota:
   - platform: esphome
     password: "${ota_password}"
+  # Updates from the GitHub release (the update entity below), on a tap or from HA.
+  - platform: http_request
+    id: ota_github
+
+# Checks the latest GitHub release's manifest (in a task of its own, so the
+# Sticky never waits on it) after each start and every 6 hours. Home
+# Assistant shows it as a firmware update; the Sticky shows it in its status
+# bar. The manifest carries the firmware's MD5, which the OTA checks.
+update:
+  - platform: http_request
+    id: fw_update
+    name: Firmware
+    ota_id: ota_github
+    source: https://github.com/Frankynov/sticky-remote/releases/latest/download/ota-manifest.json
+    update_interval: 6h
 
 # Settings shown on the Sticky's device page in Home Assistant.
 select:
@@ -598,6 +615,26 @@ script:
                 remote_ui::hold_pins_for_sleep();
             - deep_sleep.enter: deep_sleep_ctl
 
+  # The update screen's Install: draw "Updating…", then download and flash.
+  # update.perform blocks until it reboots into the new firmware; coming
+  # back means it failed, and the screen says so.
+  - id: install_firmware
+    mode: single
+    then:
+      - logger.log: Installing the update from GitHub
+      - wait_until:
+          condition:
+            lambda: 'return !remote_ui::redraw().dirty;'
+          timeout: 3s
+      - delay: 300ms
+      - wait_until:
+          condition:
+            lambda: 'return !id(epd).is_updating();'
+          timeout: 10s
+      - update.perform: fw_update
+      - logger.log: The update failed
+      - lambda: 'remote_ui::apply("update_failed", "1");'
+
   # A button (or USB power) ended a doze, or the asleep face on USB, where
   # deep sleep waits for the cable to go: back to the live screen.
   - id: wake_up
@@ -668,6 +705,8 @@ interval:
             remote_ui::apply("date", d);
           }
           remote_ui::minute_tick(t.is_valid(), t.hour, t.minute, t.timestamp);
+          remote_ui::apply("update_version", id(fw_update).state == update::UPDATE_STATE_AVAILABLE
+                                                 ? id(fw_update).update_info.latest_version : std::string());
       # Put to sleep on USB, it stayed awake (USB wakes it); unplugged, it sleeps for real.
       - if:
           condition:
@@ -709,6 +748,7 @@ interval:
               const uint32_t chosen = sticky::sleep_after_ms();   // 0: never by itself
               if (chosen == 0) return false;
               const uint32_t limit = m.in_setup() ? std::max<uint32_t>(chosen, ${setup_sleep_after_ms}) : chosen;
+              if (m.update_step == remote_ui::Model::Upd::INSTALLING) return false;
               return !id(usb_power).state && !m.sleeping && millis() - id(last_activity) > limit;
           then:
             - script.execute: go_to_sleep
@@ -716,8 +756,12 @@ interval:
 # --- Artwork ---------------------------------------------------------------------------------
 http_request:
   timeout: 10s
-  # The proxy URL carries its own token; never follow a redirect elsewhere.
-  follow_redirects: false
+  # GitHub release downloads are redirects (releases/latest → the tag → its
+  # asset store, with a long signed URL): follow them, with room for the URL.
+  follow_redirects: true
+  redirect_limit: 4
+  buffer_size_rx: 2048
+  buffer_size_tx: 2048
 
 image:
   - platform: online_image
@@ -817,7 +861,7 @@ font:
   - file: fonts/materialdesignicons-webfont.ttf
     id: i24
     size: 24
-    glyphs: ["\U000F05A9", "\U000F05AA", "\U000F040A", "\U000F03E4", "\U000F16C7"]  # wifi, wifi-off, play, pause, wifi-sync
+    glyphs: ["\U000F05A9", "\U000F05AA", "\U000F040A", "\U000F03E4", "\U000F16C7", "\U000F01DA"]  # wifi, wifi-off, play, pause, wifi-sync, download
   - file: fonts/materialdesignicons-webfont.ttf
     id: i40
     size: 40
@@ -836,7 +880,7 @@ font:
   - file: fonts/materialdesignicons-webfont.ttf
     id: i120
     size: 120
-    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2"]       # movie, tv-off, home-assistant, sleep
+    glyphs: ["\U000F0FCF", "\U000F083B", "\U000F07D0", "\U000F04B2", "\U000F01DA"]   # movie, tv-off, home-assistant, sleep, download
   # The sleep clock: digits only, one per typeface.
   - file: fonts/Inter-Bold.ttf
     id: clock_inter

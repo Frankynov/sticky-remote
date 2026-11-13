@@ -32,6 +32,32 @@ cat > web/firmware/manifest.json <<JSON
 JSON
 echo "▸ Firmware: web/firmware/$FILE ($SIZE bytes)"
 
+# For updates from the Sticky itself (and Home Assistant): the OTA image and
+# ESPHome's update manifest, both attached to the GitHub release v$VERSION.
+# The Sticky reads releases/latest/download/ota-manifest.json.
+OTA="sticky-remote-$VERSION.ota.bin"
+cp "$(dirname "$BIN")/firmware.ota.bin" "web/firmware/$OTA"
+MD5=$(md5 -q "web/firmware/$OTA")
+REL="https://github.com/Frankynov/sticky-remote/releases"
+cat > web/firmware/ota-manifest.json <<JSON
+{
+  "name": "Sticky Remote",
+  "version": "$VERSION",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "ota": {
+        "path": "$REL/download/v$VERSION/$OTA",
+        "md5": "$MD5",
+        "release_url": "$REL/tag/v$VERSION",
+        "summary": "Sticky Remote $VERSION"
+      }
+    }
+  ]
+}
+JSON
+echo "▸ OTA: web/firmware/$OTA + ota-manifest.json (release assets for v$VERSION)"
+
 # The device previews: the build's exact glyphs, and screens rendered by the
 # firmware's own drawing code (the command-line simulator).
 echo "▸ Device previews…"

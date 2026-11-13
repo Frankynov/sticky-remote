@@ -1,0 +1,15 @@
+{
+  "name": "Sticky Remote",
+  "version": "0.7.0",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "ota": {
+        "path": "https://github.com/Frankynov/sticky-remote/releases/download/v0.7.0/sticky-remote-0.7.0.ota.bin",
+        "md5": "e8ce50d85306d6580b232031390f27bd",
+        "release_url": "https://github.com/Frankynov/sticky-remote/releases/tag/v0.7.0",
+        "summary": "Sticky Remote 0.7.0"
+      }
+    }
+  ]
+}

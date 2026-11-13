@@ -63,6 +63,7 @@ struct CallbackActions : remote_ui::Actions {
   void volume(bool up) override { send(up ? "volume up" : "volume down"); }
   void open_infuse() override { send("open_infuse"); }
   void sleep() override { send("sleep"); }
+  void install_update() override { send("install_update"); }
 } g_actions;
 
 }  // namespace
@@ -198,7 +199,8 @@ const char *sc_action_name(int a) {
   static const char *const names[] = {"NONE", "LIGHT_1", "LIGHT_2", "ATV_POWER", "PLAY_PAUSE", "SKIP_BACK",
                                       "SKIP_FWD", "SEEK", "VOL_DOWN", "VOL_UP", "OPEN_INFUSE", "TURN_ON",
                                       "TAB_NOW", "TAB_REMOTE", "NAV_UP", "NAV_DOWN", "NAV_LEFT", "NAV_RIGHT",
-                                      "NAV_SELECT", "NAV_BACK", "NAV_HOME"};
+                                      "NAV_SELECT", "NAV_BACK", "NAV_HOME", "UPDATE_OPEN", "UPDATE_INSTALL",
+                                      "UPDATE_CLOSE"};
   return a >= 0 && a < (int) (sizeof names / sizeof *names) ? names[a] : "?";
 }
 

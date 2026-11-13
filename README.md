@@ -48,6 +48,14 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 - **Touch sound** (Off, Quiet, Normal), **Sleep after** and **Clock while
   asleep**: from the setup page or the Sticky's device page in Home Assistant
   (under Configuration).
+- **Updates from the Sticky:** after each start and every 6 hours it checks
+  the latest GitHub release (in a background task). When there's a newer
+  one, the status bar shows a download icon and "Update x.y.z"; a tap opens
+  Install / Not now. Install downloads the release's OTA image over HTTPS,
+  checks its MD5 and restarts into it, keeping Wi-Fi, settings and the Home
+  Assistant pairing. Below 30 % battery it asks to be plugged in first. Home
+  Assistant shows the same update as the Sticky's *Firmware* entity and can
+  install it too.
 - **Artwork** loads in a background task: download (HTTPS with certificate
   checks) and JPEG decode at 1/2, 1/4 or 1/8 scale never hold up touch or the
   screen. Other formats fall back to ESPHome's `online_image`.
@@ -143,10 +151,16 @@ ESPHOME=/path/to/esphome web/build.sh
 
 This compiles the generic firmware, writes
 `web/firmware/sticky-remote-<version>.factory.bin` and `manifest.json`
-(version, size, SHA-256), extracts the firmware's glyphs into `web/fonts/`,
+(version, size, SHA-256), the OTA image `sticky-remote-<version>.ota.bin`
+and `ota-manifest.json` (ESPHome's update manifest, with the image's MD5), extracts the firmware's glyphs into `web/fonts/`,
 renders `web/previews/`, then stages everything that goes online in
 `build/upload/sticky/`, including `.htaccess` with the security headers.
 
+- A release attaches three files: the factory image (manual flashing),
+  and the OTA image with `ota-manifest.json`. The Sticky reads
+  `releases/latest/download/ota-manifest.json`, so the manifest must be on
+  the latest release and point at that release's OTA image (build.sh writes
+  it that way).
 - `python3 web/serve_local.py` serves the page locally without caching.
 - `web/check_preview.py` compares the page's JS drawing with the firmware's
   render for the cases in `check_cases.json` (they should differ by 0 pixels).
