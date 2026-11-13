@@ -64,7 +64,10 @@ jobs:
           [ "$(stat -c%s "web/firmware/$FILE")" = "$(jq -r .size "$M")" ] || { echo "::error::size differs from manifest.json"; exit 1; }
 
       - name: Stage the page
-        run: web/stage.sh
+        # Tags before 0.7.2 copy with macOS's ditto; cp -R does the same here.
+        run: |
+          sed -i 's/^ditto /cp -R /' web/stage.sh
+          web/stage.sh
 
       - name: Upload to the server
         env:
