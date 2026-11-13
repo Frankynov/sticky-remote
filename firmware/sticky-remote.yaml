@@ -239,7 +239,8 @@ ota:
       - lambda: 'sticky::ota_paint("done");'
 
 # Checks the latest GitHub release's manifest (in a task of its own, so the
-# Sticky never waits on it) after each start and every 6 hours. Home
+# Sticky never waits on it) at most every 6 hours, deep sleeps included
+# (sticky::update_check_due, from the 60 s interval below). Home
 # Assistant shows it as a firmware update; the Sticky shows it in its status
 # bar. The manifest carries the firmware's MD5, which the OTA checks.
 update:
@@ -248,7 +249,8 @@ update:
     name: Firmware
     ota_id: ota_github
     source: https://github.com/Frankynov/sticky-remote/releases/latest/download/ota-manifest.json
-    update_interval: 6h
+    # Not on its own (it would check after every wake): the interval below decides.
+    update_interval: never
 
 # Settings shown on the Sticky's device page in Home Assistant.
 select:
@@ -755,6 +757,18 @@ interval:
             net = Net::NO_NETWORK;   // only wifi-setup.yaml's placeholder: nothing real to join
           else if (millis() - id(last_online) > 90000) net = Net::UNREACHABLE;   // as the old hotspot timeout
           remote_ui::set_network(net, ip);
+
+  # A firmware update check when one is due (at most every 6 hours), once on
+  # Wi-Fi with the time known; never while asleep (Wi-Fi is off then).
+  - interval: 60s
+    then:
+      - lambda: |-
+          if (remote_ui::model().sleeping || !wifi::global_wifi_component->is_connected()) return;
+          auto t = id(ha_time).now();
+          if (t.is_valid() && sticky::update_check_due(t.timestamp)) {
+            ESP_LOGI("update", "Looking for a firmware update");
+            id(fw_update).update();
+          }
 
   # Sleep after a quiet spell, on battery only.
   - interval: 5s

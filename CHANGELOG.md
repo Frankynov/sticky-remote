@@ -7,6 +7,7 @@ Each version's first list is what the Sticky shows on its update screen
 
 - Updating shows a progress bar, then "Update done" before it restarts.
 - An update started from Home Assistant shows on the Sticky too.
+- Looks for updates at most every 6 hours, never while asleep.
 
 ## 0.7.0
 

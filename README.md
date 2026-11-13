@@ -48,8 +48,9 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 - **Touch sound** (Off, Quiet, Normal), **Sleep after** and **Clock while
   asleep**: from the setup page or the Sticky's device page in Home Assistant
   (under Configuration).
-- **Updates from the Sticky:** after each start and every 6 hours it checks
-  the latest GitHub release (in a background task). When there's a newer
+- **Updates from the Sticky:** at most every 6 hours (deep sleeps included:
+  the last check's time is kept in RTC memory) it checks the latest GitHub
+  release, in a background task, and never while asleep. When there's a newer
   one, the status bar shows a download icon and "Update x.y.z"; a tap opens
   Install / Not now. Install downloads the release's OTA image over HTTPS,
   checks its MD5 and restarts into it, keeping Wi-Fi, settings and the Home

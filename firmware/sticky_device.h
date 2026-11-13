@@ -776,6 +776,23 @@ inline void restore_wifi() {
   ESP_LOGI("sticky", "Wi-Fi: using the saved network %s", s.ssid);
 }
 
+// --- How often to look for a firmware update ------------------------------------
+// At most every 6 hours, across deep sleeps too: a wake from deep sleep is a
+// fresh start, and ESPHome's update entity checks after every start. The time
+// of the last check lives in RTC memory, which deep sleep keeps (a power-off
+// or a reflash clears it, and then it checks once).
+constexpr int64_t UPDATE_CHECK_EVERY_S = 6 * 3600;
+RTC_DATA_ATTR static int64_t s_last_update_check = 0;
+
+/// True when a check is due (and counts it as done); `now` is epoch seconds.
+inline bool update_check_due(int64_t now) {
+  if (now < 1600000000) return false;   // no clock yet
+  if (s_last_update_check > 0 && now - s_last_update_check < UPDATE_CHECK_EVERY_S && now >= s_last_update_check)
+    return false;
+  s_last_update_check = now;
+  return true;
+}
+
 // --- Drawing during an OTA ----------------------------------------------------------
 // The HTTP OTA downloads on the main loop, which also runs the panel's state
 // machine, so nothing would be drawn until the reboot. Its progress callbacks

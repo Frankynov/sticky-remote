@@ -6,9 +6,9 @@
       "chipFamily": "ESP32-S3",
       "ota": {
         "path": "https://github.com/Frankynov/sticky-remote/releases/download/v0.7.1/sticky-remote-0.7.1.ota.bin",
-        "md5": "49beb315451631dc0f28f7ebd7cf10bb",
+        "md5": "ee25a7277a2e036f422f605f4fdd773d",
         "release_url": "https://github.com/Frankynov/sticky-remote/releases/tag/v0.7.1",
-        "summary": "Updating shows a progress bar, then \"Update done\" before it restarts.\nAn update started from Home Assistant shows on the Sticky too."
+        "summary": "Updating shows a progress bar, then \"Update done\" before it restarts.\nAn update started from Home Assistant shows on the Sticky too.\nLooks for updates at most every 6 hours, never while asleep."
       }
     }
   ]
