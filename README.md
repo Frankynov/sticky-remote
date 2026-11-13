@@ -103,6 +103,7 @@ Credentials stay with the person setting up the Sticky.
 |---|---|
 | `firmware/` | The ESPHome configs, the UI (`remote_ui.h`), device settings and the USB setup protocol (`sticky_device.h`), fonts |
 | `engine/` | The firmware's UI compiled for a computer: a C API (`sticky_core.h`) over `remote_ui.h`, stand-ins for the ESPHome headers it uses, and a command-line renderer (`sim`) |
+| `tests/` | Sleep and wake tests: every decision in `firmware/sleep_logic.h` and whole sequences, on a computer (`tests/run.sh`) |
 | `web/` | The setup wizard and web flasher served at frankynov.ovh/sticky |
 | `design/` | Mockups (`mockup.py`), sample posters, the app icon |
 | `docs/` | Plans |
@@ -115,6 +116,20 @@ builds on it; it isn't published yet.
 ## Building
 
 You need ESPHome (2026.10 or later) and Python 3 with Pillow.
+
+### Tests
+
+What the buttons do, which way it falls asleep, what ends a doze and when it
+sleeps by itself are decided in `firmware/sleep_logic.h`, plain C++ the YAML
+calls. `tests/run.sh` checks every case of it on a computer, plays whole
+sequences (sleep, doze, tap to wake, sleep again, unplug while asleep…), and
+checks the firmware configuration for what a computer can't test: the
+buttons are polled, and the light sleep leaves the pins as it found them.
+It needs a C++ compiler and Python 3, no device; GitHub runs it on every push.
+
+```sh
+tests/run.sh
+```
 
 ### The firmware
 

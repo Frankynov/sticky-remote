@@ -41,8 +41,11 @@
 #include "esphome/core/log.h"
 #include "esphome/core/preferences.h"
 
+#include "sleep_logic.h"
+
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "soc/gpio_struct.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -216,48 +219,52 @@ inline void set_clock(bool on) {
   remote_ui::apply("sleep_clock", on ? "1" : "0");
 }
 
-enum class Woke { TIMER, BUTTON, USB, OTHER, REJECTED };
+using sleep_logic::Woke;
 
 /// Light sleep until the next whole minute (at most `max_s` seconds), a button
 /// (low on GPIO4/5/6) or USB power (high on GPIO9). Wi-Fi must be off first.
 /// Everything is kept: the panel's comparison frame, the clock, the settings.
+/// The pins' interrupt settings are put back as they were afterwards:
+/// gpio_wakeup_enable() changes them and gpio_wakeup_disable() doesn't undo it.
 inline Woke doze(uint32_t max_s) {
-  const time_t t = ::time(nullptr);
-  uint32_t s = max_s;
-  if (t > 1600000000) s = std::min<uint32_t>(max_s, (uint32_t) (60 - t % 60));
-  if (s == 0) s = 60;
+  static constexpr gpio_num_t WAKE_PINS[] = {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9};
+  const uint32_t s = sleep_logic::doze_seconds((int64_t) ::time(nullptr), max_s);
   // The latch, charger and touch supply keep their levels; the buttons keep their pull-ups.
   for (auto pin : {GPIO_NUM_45, GPIO_NUM_46, GPIO_NUM_39, GPIO_NUM_42, GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9})
     gpio_sleep_sel_dis(pin);
+  uint32_t int_type[4];
+  for (int i = 0; i < 4; i++) int_type[i] = GPIO.pin[WAKE_PINS[i]].int_type;
   for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6}) gpio_wakeup_enable(pin, GPIO_INTR_LOW_LEVEL);
   gpio_wakeup_enable(GPIO_NUM_9, GPIO_INTR_HIGH_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_timer_wakeup((uint64_t) s * 1000000ULL + 200000ULL);   // just past the minute mark
   const esp_err_t err = esp_light_sleep_start();
   const auto cause = esp_sleep_get_wakeup_cause();
-  // Read the pins first thing: a quick tap may be over by the time the log
-  // line below has gone out.
+  // Read the USB pin first thing, before anything slow (the log line below).
   const bool usb = gpio_get_level(GPIO_NUM_9);
-  if (err != ESP_OK) {
+  // Leave nothing armed: deep sleep (clock off) sets up its own wake sources.
+  for (int i = 0; i < 4; i++) {
+    gpio_wakeup_disable(WAKE_PINS[i]);
+    gpio_set_intr_type(WAKE_PINS[i], (gpio_int_type_t) int_type[i]);
+  }
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+  const Woke w = sleep_logic::classify(err == ESP_OK,
+                                       cause == ESP_SLEEP_WAKEUP_TIMER  ? sleep_logic::Cause::TIMER
+                                       : cause == ESP_SLEEP_WAKEUP_GPIO ? sleep_logic::Cause::GPIO
+                                                                        : sleep_logic::Cause::OTHER,
+                                       usb);
+  if (w == Woke::REJECTED) {
     // Refused (a wake source already active, or the chip's state): say why,
     // wait a little so the loop doesn't spin, and let the caller try again.
     ESP_LOGW("sticky", "light sleep refused: %s", esp_err_to_name(err));
     vTaskDelay(pdMS_TO_TICKS(2000));
   } else {
-    ESP_LOGD("sticky", "dozed %u s, woke by %s", (unsigned) s,
-             cause == ESP_SLEEP_WAKEUP_TIMER ? "the timer" : cause == ESP_SLEEP_WAKEUP_GPIO ? "a pin" : "something else");
+    static const char *const BY[] = {"the timer", "a button", "USB power", "something else", ""};
+    ESP_LOGD("sticky", "dozed %u s, woken by %s", (unsigned) s, BY[(int) w]);
   }
-  // Leave nothing armed: deep sleep (clock off) sets up its own wake sources.
-  for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_9}) gpio_wakeup_disable(pin);
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
   esphome::App.feed_wdt();
-  if (err != ESP_OK) return Woke::REJECTED;
-  if (cause == ESP_SLEEP_WAKEUP_TIMER) return Woke::TIMER;
-  // A button wakes it however briefly it was pressed: the pin was low when
-  // the chip woke, even if it's high again now.
-  if (cause == ESP_SLEEP_WAKEUP_GPIO) return usb ? Woke::USB : Woke::BUTTON;
-  return Woke::OTHER;
+  return w;
 }
 
 // --- Touch calibration (its own preference, so settings resets keep it) -------

@@ -1,14 +1,14 @@
 {
   "name": "Sticky Remote",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "builds": [
     {
       "chipFamily": "ESP32-S3",
       "ota": {
-        "path": "https://github.com/Frankynov/sticky-remote/releases/download/v0.7.2/sticky-remote-0.7.2.ota.bin",
-        "md5": "324547f5c0653022418aff7cef8a80bf",
-        "release_url": "https://github.com/Frankynov/sticky-remote/releases/tag/v0.7.2",
-        "summary": "Asleep with the clock, a quick press on any button wakes it again.\nThe progress bar moves on its own while playing (once a minute)."
+        "path": "https://github.com/Frankynov/sticky-remote/releases/download/v0.7.3/sticky-remote-0.7.3.ota.bin",
+        "md5": "c247ea191bed8c20b033a72064a72f28",
+        "release_url": "https://github.com/Frankynov/sticky-remote/releases/tag/v0.7.3",
+        "summary": "The AI button puts it to sleep again after it has dozed with the clock.\nUnplugged while asleep on USB, it keeps the clock going instead of freezing it.\nAsleep during setup, or before it knows the time, it shows the dark face."
       }
     }
   ]

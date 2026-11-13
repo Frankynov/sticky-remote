@@ -1,0 +1,16 @@
+# Sleep and wake tests (tests/run.sh) on every push and pull request.
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  sleep-logic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tests/run.sh

@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.7.2"
+  firmware_version: "0.7.3"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room
@@ -85,6 +85,7 @@ esphome:
     name: fgilbert.sticky-remote
     version: ${firmware_version}
   includes:
+    - sleep_logic.h
     - remote_ui.h
     - sticky_device.h
   on_boot:
@@ -416,8 +417,15 @@ sensor:
           m.battery = x;
 
 binary_sensor:
+  # The buttons and USB sense are polled, not read through pin interrupts:
+  # light sleep (sticky::doze) reprograms these pins' interrupts to wake the
+  # chip, and an interrupt-driven sensor then missed releases, so the AI
+  # button stopped working after the first doze. Polling reads the level
+  # every loop, whatever the pin's interrupt setting.
+  # tests/check_config.py checks this stays so.
   - platform: gpio
     id: usb_power
+    use_interrupt: false
     pin:
       number: GPIO9
       allow_other_uses: true
@@ -428,10 +436,11 @@ binary_sensor:
           id(last_activity) = millis();
           remote_ui::request();
 
-  # Physical buttons: AI/power = sleep now, up/down = volume.
-  # A press that just woke the device only wakes it.
+  # Physical buttons: AI/power = sleep now, up/down = volume; any wakes it.
+  # What each press does is decided in sleep_logic::on_press (tested).
   - platform: gpio
     id: button_ai
+    use_interrupt: false
     pin:
       number: GPIO4
       allow_other_uses: true
@@ -442,56 +451,37 @@ binary_sensor:
           - ON for at most 1.5s
           - OFF for at least 50ms
         then:
-          - lambda: |-
-              id(last_activity) = millis();
-              ESP_LOGI("buttons", "AI pressed (asleep %d, dozing %d)", remote_ui::model().sleeping, id(dozing));
-              if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
-              if (millis() < 2000 || millis() - id(woke_at) < 1500) return;   // the press that woke it
-              auto t = id(ha_time).now();
-              remote_ui::handle_button(remote_ui::BTN_AI, t.is_valid() ? t.timestamp : 0,
-                                       *remote_ui::actions());
+          - script.execute: { id: press, which: 0 }
       - timing:
           - ON for at least 1.5s
         then:
-          - lambda: |-
-              if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
-              if (millis() - id(woke_at) > 2500) id(go_to_sleep).execute();
+          - script.execute: { id: press, which: 1 }
   - platform: gpio
     id: button_up
+    use_interrupt: false
     pin:
       number: GPIO5
       allow_other_uses: true
       mode: INPUT_PULLUP
       inverted: true
     on_press:
-      - lambda: |-
-          id(last_activity) = millis();
-          ESP_LOGI("buttons", "Up pressed");
-          if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
-          if (millis() > 2000 && millis() - id(woke_at) > 1500)
-            remote_ui::handle_button(remote_ui::BTN_UP, 0, *remote_ui::actions());
+      - script.execute: { id: press, which: 2 }
   - platform: gpio
     id: button_down
+    use_interrupt: false
     pin:
       number: GPIO6
       allow_other_uses: true
       mode: INPUT_PULLUP
       inverted: true
     on_press:
-      - lambda: |-
-          id(last_activity) = millis();
-          ESP_LOGI("buttons", "Down pressed");
-          if (id(dozing) || remote_ui::model().sleeping) return id(wake_up).execute();
-          if (millis() > 2000 && millis() - id(woke_at) > 1500)
-            remote_ui::handle_button(remote_ui::BTN_DOWN, 0, *remote_ui::actions());
+      - script.execute: { id: press, which: 3 }
     # Hold 3 s: touch calibration, in development builds only (touch_calibration).
     on_multi_click:
       - timing:
           - ON for at least 3s
         then:
-          - lambda: |-
-              id(last_activity) = millis();
-              remote_ui::calib_start();
+          - script.execute: { id: press, which: 4 }
 
 # --- Actions sent to Home Assistant -------------------------------------------------------
 script:
@@ -589,12 +579,100 @@ script:
   # Leave the "Asleep" face on the panel, then sleep. With the clock on (and
   # off USB, and set up), that is light sleep with a wake every minute to move
   # the clock; otherwise the power latch is frozen and it deep-sleeps.
+  # A physical button (which: sleep_logic::Press), carried out as
+  # sleep_logic::on_press decides.
+  - id: press
+    mode: queued
+    parameters:
+      which: int
+    then:
+      - lambda: |-
+          using sleep_logic::Do;
+          const auto p = (sleep_logic::Press) which;
+          const sleep_logic::Awake a{millis(), id(woke_at), remote_ui::model().sleeping, id(dozing)};
+          const Do d = sleep_logic::on_press(a, p);
+          static const char *const NAMES[] = {"AI", "AI held", "Up", "Down", "Down held"};
+          static const char *const DOS[] = {"nothing (it just woke)", "wake", "act", "sleep", "calibrate"};
+          ESP_LOGI("buttons", "%s: %s (asleep %d, dozing %d)", NAMES[which], DOS[(int) d], a.sleeping, a.dozing);
+          id(last_activity) = millis();
+          switch (d) {
+            case Do::NOTHING: break;
+            case Do::WAKE: id(wake_up).execute(); break;
+            case Do::SLEEP: id(go_to_sleep).execute(); break;
+            case Do::CALIBRATE: remote_ui::calib_start(); break;
+            case Do::BUTTON: {
+              auto t = id(ha_time).now();
+              const auto b = p == sleep_logic::Press::UP ? remote_ui::BTN_UP
+                           : p == sleep_logic::Press::DOWN ? remote_ui::BTN_DOWN : remote_ui::BTN_AI;
+              remote_ui::handle_button(b, t.is_valid() ? t.timestamp : 0, *remote_ui::actions());
+              break;
+            }
+          }
+
+  # Asleep: draw the face, then doze with the clock or deep-sleep, as
+  # sleep_logic::asleep_path says. On USB it can't deep-sleep: the face stays
+  # up and the buttons live (hold_pins_for_sleep hands them to the RTC, where
+  # the firmware no longer sees them) until the cable goes, then it decides
+  # again. A button stops this script on the way (wake_up).
   - id: go_to_sleep
     mode: single
     then:
       - lambda: |-
-          remote_ui::model().sleeping = true;
+          auto &m = remote_ui::model();
+          m.sleeping = true;
+          m.asleep_clock = sleep_logic::shows_clock(
+              {sticky::clock_on(), m.in_setup(), id(ha_time).now().is_valid(), id(usb_power).state});
           remote_ui::request(true);
+      - script.execute: face_drawn
+      - script.wait: face_drawn
+      - lambda: |-
+          ESP_LOGI("sleep", "Asleep face drawn (clock %d, USB %d, setup %d)", remote_ui::model().asleep_clock,
+                   id(usb_power).state, remote_ui::model().in_setup());
+      - if:
+          condition:
+            binary_sensor.is_on: usb_power
+          then:
+            - logger.log: "On USB: showing the asleep face until unplugged or a button is pressed"
+            - wait_until:
+                binary_sensor.is_off: usb_power
+            - logger.log: Unplugged
+      # What it shows must match the way it sleeps (the time may have become
+      # known, or the setting changed, while it waited).
+      - if:
+          condition:
+            lambda: |-
+              auto &m = remote_ui::model();
+              const sleep_logic::Asleep st{sticky::clock_on(), m.in_setup(), id(ha_time).now().is_valid(), false};
+              if (!sleep_logic::redraw_before(st, m.asleep_clock)) return false;
+              m.asleep_clock = sleep_logic::shows_clock(st);
+              remote_ui::request(true);
+              return true;
+          then:
+            - script.execute: face_drawn
+            - script.wait: face_drawn
+      - if:
+          condition:
+            lambda: |-
+              const auto &m = remote_ui::model();
+              const sleep_logic::Asleep st{sticky::clock_on(), m.in_setup(), id(ha_time).now().is_valid(),
+                                           (bool) id(usb_power).state};
+              return sleep_logic::asleep_path(st) == sleep_logic::Path::DOZE;
+          then:
+            - logger.log: Dozing, with the clock
+            - lambda: |-
+                wifi::global_wifi_component->disable();
+                id(dozing) = true;
+          else:
+            - logger.log: Going to deep sleep
+            - lambda: |-
+                id(deep_sleep_ctl).allow_deep_sleep();
+                remote_ui::hold_pins_for_sleep();
+            - deep_sleep.enter: deep_sleep_ctl
+
+  # Waits until the requested screen is on the panel.
+  - id: face_drawn
+    mode: restart
+    then:
       - wait_until:
           condition:
             lambda: 'return !remote_ui::redraw().dirty;'
@@ -604,34 +682,6 @@ script:
           condition:
             lambda: 'return !id(epd).is_updating();'
           timeout: 20s
-      - lambda: |-
-          ESP_LOGI("sleep", "Asleep face drawn (clock %d, USB %d, setup %d)", sticky::clock_on(),
-                   id(usb_power).state, remote_ui::model().in_setup());
-      - if:
-          condition:
-            lambda: 'return sticky::clock_on() && !remote_ui::model().in_setup() && !id(usb_power).state;'
-          then:
-            - logger.log: Dozing, with the clock
-            - lambda: |-
-                wifi::global_wifi_component->disable();
-                id(dozing) = true;
-          else:
-            # On USB it can't deep-sleep: keep the face up and the buttons live
-            # (hold_pins_for_sleep hands them to the RTC, where the firmware no
-            # longer sees them) until the cable goes. A button press stops
-            # this script (wake_up).
-            - if:
-                condition:
-                  binary_sensor.is_on: usb_power
-                then:
-                  - logger.log: "On USB: showing the asleep face until unplugged or a button is pressed"
-                  - wait_until:
-                      binary_sensor.is_off: usb_power
-            - logger.log: Going to deep sleep
-            - lambda: |-
-                id(deep_sleep_ctl).allow_deep_sleep();
-                remote_ui::hold_pins_for_sleep();
-            - deep_sleep.enter: deep_sleep_ctl
 
   # The update screen's Install: draw "Updating…", then download and flash.
   # update.perform blocks until it reboots into the new firmware; coming
@@ -688,10 +738,11 @@ interval:
           if (id(dozing)) {
             if (id(epd).is_updating()) return;
             if (remote_ui::redraw().dirty) goto refresh;
-            const auto woke = sticky::doze(600);
-            if (woke == sticky::Woke::REJECTED || woke == sticky::Woke::OTHER) return;   // logged; doze again
+            using sleep_logic::AfterDoze;
+            const auto next = sleep_logic::after_doze(sticky::doze(600));
+            if (next == AfterDoze::DOZE_AGAIN) return;   // logged
+            if (next == AfterDoze::WAKE) return id(wake_up).execute();
             auto t = id(ha_time).now();
-            if (woke != sticky::Woke::TIMER) return id(wake_up).execute();
             if (t.is_valid()) {
               char d[24];
               snprintf(d, sizeof d, "%d %d %d", t.day_of_week, t.day_of_month, t.month);
@@ -731,7 +782,9 @@ interval:
       # Put to sleep on USB, it stayed awake (USB wakes it); unplugged, it sleeps for real.
       - if:
           condition:
-            lambda: 'return remote_ui::model().sleeping && !id(dozing) && !id(usb_power).state && !id(go_to_sleep).is_running();'
+            lambda: |-
+              return sleep_logic::resleep_due(remote_ui::model().sleeping, id(dozing), id(usb_power).state,
+                                              id(go_to_sleep).is_running());
           then:
             - script.execute: go_to_sleep
 
@@ -778,11 +831,9 @@ interval:
             lambda: |-
               // Setup screens (Wi-Fi, pairing) get much longer: they need it awake.
               const auto &m = remote_ui::model();
-              const uint32_t chosen = sticky::sleep_after_ms();   // 0: never by itself
-              if (chosen == 0) return false;
-              const uint32_t limit = m.in_setup() ? std::max<uint32_t>(chosen, ${setup_sleep_after_ms}) : chosen;
-              if (m.update_step == remote_ui::Model::Upd::INSTALLING) return false;
-              return !id(usb_power).state && !m.sleeping && millis() - id(last_activity) > limit;
+              return sleep_logic::auto_sleep_due({millis() - id(last_activity), sticky::sleep_after_ms(),
+                                                  ${setup_sleep_after_ms}, (bool) id(usb_power).state, m.sleeping,
+                                                  m.in_setup(), m.update_step == remote_ui::Model::Upd::INSTALLING});
           then:
             - script.execute: go_to_sleep
 

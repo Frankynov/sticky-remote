@@ -134,6 +134,7 @@ struct Model {
   float battery = NAN;
   bool usb = false;
   bool sleep_clock = true;        // asleep on battery: a clock that ticks every minute
+  bool asleep_clock = false;      // the asleep face shows the clock (sleep_logic::shows_clock, set on falling asleep)
   // Firmware updates from the GitHub release (the firmware's update entity).
   std::string fw_version;         // running
   std::string update_version;     // newer one available, or empty
@@ -1007,7 +1008,7 @@ static const char *const MONTH_NAMES[] = {"", "January", "February", "March", "A
 
 inline void draw_asleep(Ctx &c, const Model &m, const char *room, bool time_valid, int hour, int minute) {
   c.it.fill(c.ink);
-  const bool clock = m.sleep_clock && time_valid;
+  const bool clock = m.asleep_clock && time_valid;
   char buf[48];
   if (clock) {
     snprintf(buf, sizeof buf, "%d:%02d", hour, minute);
@@ -1206,6 +1207,7 @@ inline void minute_tick(bool time_valid, int hour, int minute, int64_t now_epoch
   const auto &m = model();
   const auto &r = redraw();
   const int clock = hour * 60 + minute;
+  if (m.sleeping && !m.asleep_clock) return;   // the dark face stays as drawn (sleep_logic::minute_redraw)
   const int shown = m.mode() == Mode::PLAYING ? shown_minute(m, now_epoch) : -1;
   if (clock != r.drawn_clock || shown != r.drawn_minute) request();
 }
@@ -1383,8 +1385,9 @@ inline void apply(const std::string &key, const std::string &v) {
   else if (key == "light1_brightness") m.lights[1].brightness = to_float(v);
   else if (key == "online") m.online = v == "1";
   else if (key == "usb") m.usb = v == "1";
-  else if (key == "sleeping") {
+  else if (key == "sleeping") {   // the simulator and design renders (the firmware's go_to_sleep sets these itself)
     m.sleeping = v == "1";
+    m.asleep_clock = m.sleeping && m.sleep_clock;
     return request(true);
   } else if (key == "battery") {
     const float x = to_float(v);

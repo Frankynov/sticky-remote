@@ -3,6 +3,12 @@
 Each version's first list is what the Sticky shows on its update screen
 (short lines, plain characters); web/build.sh puts it in the update manifest.
 
+## 0.7.3
+
+- The AI button puts it to sleep again after it has dozed with the clock.
+- Unplugged while asleep on USB, it keeps the clock going instead of freezing it.
+- Asleep during setup, or before it knows the time, it shows the dark face.
+
 ## 0.7.2
 
 - Asleep with the clock, a quick press on any button wakes it again.
