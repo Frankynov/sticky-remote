@@ -2,8 +2,11 @@
 # published, with that release's firmware: no more uploading by hand.
 #
 # The firmware image comes from the release and is checked against the
-# SHA-256 and size in web/firmware/manifest.json at the release's tag before
-# anything is uploaded. The page's own files come from the same tag.
+# SHA-256 and size in web/firmware/manifest.json before anything is
+# uploaded. The page's own files come from the release's tag, or, for a run
+# by hand without a tag, from the branch it was started on: page changes go
+# online without a new release. Then manifest.json there must name the latest
+# release, so a branch with firmware that isn't released yet stops here.
 #
 # The server login lives only in this repository's secrets (Settings ›
 # Secrets and variables › Actions), set by the owner:
@@ -12,7 +15,8 @@
 #   SITE_PASSWORD  its password
 #   SITE_DIR       the page's folder, from the login's home, e.g. www/sticky
 #
-# Run it by hand from the Actions tab (Run workflow) to redeploy a release.
+# Run it by hand from the Actions tab (Run workflow): with a tag, redeploys
+# that release as it was; empty, publishes the branch's page.
 name: Deploy the setup page
 
 on:
@@ -21,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to deploy (empty: the latest release)"
+        description: "Release tag to redeploy as it was (empty: this branch's page, with the latest release)"
         required: false
 
 permissions:
@@ -49,7 +53,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.rel.outputs.tag }}
+          ref: ${{ (github.event_name == 'release' || inputs.tag != '') && steps.rel.outputs.tag || github.sha }}
 
       - name: Firmware from the release, checked against manifest.json
         env:
