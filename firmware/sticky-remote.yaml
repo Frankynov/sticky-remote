@@ -20,7 +20,7 @@ substitutions:
   # "true" appends the MAC's last bytes to the name (sticky-remote-a1b2c3), so
   # several Stickies can live in one home. The generic firmware sets it.
   name_add_mac_suffix: "false"
-  firmware_version: "0.7.1"
+  firmware_version: "0.7.2"
 
   # --- Defaults for the device settings (overridden by settings sent over USB)
   room_name: Living room

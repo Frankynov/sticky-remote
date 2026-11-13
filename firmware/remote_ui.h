@@ -196,12 +196,15 @@ inline int64_t days_from_civil(int y, unsigned m, unsigned d) {
 }
 
 inline int64_t parse_iso8601(const std::string &s) {
+  // "2026-11-13T14:02:29Z", or Python's str() of a datetime, which is what
+  // HA sends for attributes: "2026-11-13 14:02:29.316136+00:00".
   int y, mo, d, h, mi, se;
-  if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) return -1;
+  if (s.size() < 19 || (s[10] != 'T' && s[10] != ' ')) return -1;
+  if (sscanf(s.c_str(), "%d-%d-%d", &y, &mo, &d) != 3) return -1;
+  if (sscanf(s.c_str() + 11, "%d:%d:%d", &h, &mi, &se) != 3) return -1;
   int64_t t = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
-  // Offset: the last "+HH:MM" / "-HH:MM" after the time, or Z.
-  const size_t tpos = s.find('T');
-  const size_t sign = s.find_first_of("+-", tpos);
+  // Offset: "+HH:MM" / "-HH:MM" after the time, or Z (or nothing: UTC).
+  const size_t sign = s.find_first_of("+-", 19);
   if (sign != std::string::npos) {
     int oh = 0, om = 0;
     if (sscanf(s.c_str() + sign + 1, "%d:%d", &oh, &om) >= 1) {

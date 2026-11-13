@@ -235,6 +235,9 @@ inline Woke doze(uint32_t max_s) {
   esp_sleep_enable_timer_wakeup((uint64_t) s * 1000000ULL + 200000ULL);   // just past the minute mark
   const esp_err_t err = esp_light_sleep_start();
   const auto cause = esp_sleep_get_wakeup_cause();
+  // Read the pins first thing: a quick tap may be over by the time the log
+  // line below has gone out.
+  const bool usb = gpio_get_level(GPIO_NUM_9);
   if (err != ESP_OK) {
     // Refused (a wake source already active, or the chip's state): say why,
     // wait a little so the loop doesn't spin, and let the caller try again.
@@ -251,13 +254,9 @@ inline Woke doze(uint32_t max_s) {
   esphome::App.feed_wdt();
   if (err != ESP_OK) return Woke::REJECTED;
   if (cause == ESP_SLEEP_WAKEUP_TIMER) return Woke::TIMER;
-  if (cause == ESP_SLEEP_WAKEUP_GPIO) {
-    // Woken by a pin: make sure one really is active, so a glitch doesn't end the doze.
-    if (gpio_get_level(GPIO_NUM_9)) return Woke::USB;
-    for (auto pin : {GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6})
-      if (!gpio_get_level(pin)) return Woke::BUTTON;
-    ESP_LOGW("sticky", "woken by a pin, but no button is pressed and USB is out: dozing on");
-  }
+  // A button wakes it however briefly it was pressed: the pin was low when
+  // the chip woke, even if it's high again now.
+  if (cause == ESP_SLEEP_WAKEUP_GPIO) return usb ? Woke::USB : Woke::BUTTON;
   return Woke::OTHER;
 }
 

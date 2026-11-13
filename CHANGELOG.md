@@ -3,6 +3,11 @@
 Each version's first list is what the Sticky shows on its update screen
 (short lines, plain characters); web/build.sh puts it in the update manifest.
 
+## 0.7.2
+
+- Asleep with the clock, a quick press on any button wakes it again.
+- The progress bar moves on its own while playing (once a minute).
+
 ## 0.7.1
 
 - Updating shows a progress bar, then "Update done" before it restarts.
