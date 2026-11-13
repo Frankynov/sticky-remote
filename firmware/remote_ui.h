@@ -14,7 +14,6 @@
 #include <string>
 
 #include "esphome/components/display/display.h"
-#include "esphome/components/qr_code/qr_code.h"
 #include "esphome/components/runtime_image/runtime_image.h"
 #include "esphome/core/color.h"
 #include "esphome/core/hal.h"
@@ -100,8 +99,9 @@ struct Light {
 };
 
 enum class Mode { OFF, IDLE, PLAYING };
-// Network as the setup screens see it.
-enum class Net : uint8_t { CONNECTING, CONNECTED, HOTSPOT };
+// Network as the setup screens see it. NO_NETWORK: nothing to join yet;
+// UNREACHABLE: the saved network has been out of reach for a while.
+enum class Net : uint8_t { CONNECTING, CONNECTED, NO_NETWORK, UNREACHABLE };
 // Which onboarding screen replaces the remote, if any.
 enum class Setup : uint8_t { NONE, WIFI, CONFIGURE, HOME_ASSISTANT, CALIBRATE };
 // Light tile icons, by settings index.
@@ -146,16 +146,16 @@ struct Model {
 
   // Onboarding
   Net net = Net::CONNECTED;
-  std::string ip, device_name = "sticky-remote", ap_ssid = "Sticky-Remote", ap_password;
+  std::string ip, device_name = "sticky-remote";
   std::string setup_url = "the Sticky setup page";   // where to finish setup (web wizard)
   bool ha_paired = true;   // the firmware loads the remembered value at boot
   bool calibrating = false; // the touch calibration screen is up
 
-  /// The setup hotspot is up: show how to join it. Connected to Wi-Fi but
-  /// never added to Home Assistant: show how to add it.
+  /// No Wi-Fi to join (or none in reach): show how to set it up over USB.
+  /// Connected but never added to Home Assistant: show how to add it.
   Setup setup() const {
     if (calibrating && !sleeping) return Setup::CALIBRATE;
-    if (net == Net::HOTSPOT) return Setup::WIFI;
+    if (net == Net::NO_NETWORK || net == Net::UNREACHABLE) return Setup::WIFI;
     if (!configured) return Setup::CONFIGURE;
     if (net == Net::CONNECTED && !ha_paired && !online) return Setup::HOME_ASSISTANT;
     return Setup::NONE;
@@ -289,9 +289,8 @@ inline void request_big() {
 inline void touched() { redraw().touched_at = esphome::millis(); }
 
 // --- Onboarding state (fed by the firmware's Wi-Fi/API hooks) ----------------
-inline void set_network(bool connected, bool hotspot, const std::string &ip) {
+inline void set_network(Net net, const std::string &ip) {
   auto &m = model();
-  const Net net = hotspot ? Net::HOTSPOT : connected ? Net::CONNECTED : Net::CONNECTING;
   if (net == m.net && ip == m.ip) return;
   const bool screen_changed = net != m.net || m.in_setup();
   m.net = net;
@@ -299,39 +298,13 @@ inline void set_network(bool connected, bool hotspot, const std::string &ip) {
   if (screen_changed) request();
 }
 
-inline void set_setup_info(const std::string &device, const std::string &ssid, const std::string &password) {
-  auto &m = model();
-  m.device_name = device;
-  m.ap_ssid = ssid;
-  m.ap_password = password;
-}
+inline void set_device_name(const std::string &device) { model().device_name = device; }
 
 inline void set_ha_paired(bool paired) {
   auto &m = model();
   if (m.ha_paired == paired) return;
   m.ha_paired = paired;
   request();
-}
-
-/// The QR code drawn on the Wi-Fi setup screen (owned by the firmware).
-inline esphome::qr_code::QrCode *&wifi_qr() {
-  static esphome::qr_code::QrCode *qr = nullptr;
-  return qr;
-}
-
-/// "WIFI:" URI that phone cameras offer to join (\ ; , : " escaped). An empty
-/// password makes it an open network ("T:nopass").
-inline std::string wifi_qr_text(const std::string &ssid, const std::string &password) {
-  auto esc = [](const std::string &v) {
-    std::string o;
-    for (char ch : v) {
-      if (ch == '\\' || ch == ';' || ch == ',' || ch == ':' || ch == '"') o += '\\';
-      o += ch;
-    }
-    return o;
-  };
-  if (password.empty()) return "WIFI:T:nopass;S:" + esc(ssid) + ";;";
-  return "WIFI:T:WPA;S:" + esc(ssid) + ";P:" + esc(password) + ";;";
 }
 
 // For touch feedback: skip the settle window so it shows as soon as the panel is free.
@@ -943,30 +916,20 @@ inline int draw_step(Ctx &c, int y, int n, const std::string &text) {
 }
 
 inline void draw_setup_wifi(Ctx &c, const Model &m) {
-  c.it.print(W / 2, 30, c.f.t30, c.ink, TextAlign::TOP_CENTER, "Set up Wi-Fi");
-  print_wrapped(c, M + 6, 76, c.f.t20, c.ink, "The Sticky can't reach a Wi-Fi network. Connect it in a minute:", W - 2 * M - 12, 27);
-
-  // QR code that joins the hotspot, in a quiet zone.
+  const bool lost = m.net == Net::UNREACHABLE;
+  c.it.print(W / 2, 30, c.f.t30, c.ink, TextAlign::TOP_CENTER, lost ? "Wi-Fi out of reach" : "Set up Wi-Fi");
+  print_wrapped(c, M + 6, 76, c.f.t20, c.ink,
+                lost ? "The Sticky can't find the network it knows. To pick another one:"
+                     : "The Sticky has no Wi-Fi network yet. To give it one:",
+                W - 2 * M - 12, 27);
   int y = 150;
-  auto *qr = wifi_qr();
-  if (qr != nullptr) {
-    const int modules = qr->get_size();
-    const int scale = modules > 0 ? std::max(3, std::min(7, 196 / modules)) : 6;
-    const int side = modules * scale, x = (W - side) / 2;
-    c.it.filled_rectangle(x - 12, y - 12, side + 24, side + 24, c.paper);
-    c.it.qr_code(x, y, qr, c.ink, scale);
-    y += side + 22;
-  }
-  c.it.print(W / 2, y, c.f.t20, c.ink, TextAlign::TOP_CENTER, "Scan with your phone's camera, or join:");
-  y += 34;
-  stroke_rrect(c, M + 30, y, W - 2 * M - 60, 76, 14, 3);
-  c.it.print(W / 2, y + 10, c.f.t26, c.ink, TextAlign::TOP_CENTER, m.ap_ssid.c_str());
-  std::string pw = m.ap_password.empty() ? "Open network, no password" : "password  " + m.ap_password;
-  c.it.print(W / 2, y + 46, c.f.t20, c.ink, TextAlign::TOP_CENTER, pw.c_str());
-  y += 100;
-  y = draw_step(c, y, 1, "Join the network above.");
-  y = draw_step(c, y, 2, "A page opens. If it doesn't, browse to 192.168.4.1.");
-  draw_step(c, y, 3, "Choose your home Wi-Fi and enter its password.");
+  y = draw_step(c, y, 1, "Plug it into a computer with a USB-C data cable.");
+  y = draw_step(c, y, 2, "In Chrome or Edge, open");
+  stroke_rrect(c, M + 30, y, W - 2 * M - 60, 54, 14, 3);
+  print_fit(c, W / 2, y + 27, c.f.t26, c.ink, TextAlign::CENTER, m.setup_url, W - 2 * M - 80);
+  y += 74;
+  y = draw_step(c, y, 3, "Connect the Sticky there: the page lists the networks it sees, and checks that it joins yours.");
+  print_wrapped(c, M + 6, std::max(y + 10, 690), c.f.t18, c.ink, "This screen goes away once it's on Wi-Fi.", W - 2 * M - 12, 24);
 }
 
 inline void draw_setup_ha(Ctx &c, const Model &m) {
@@ -999,7 +962,7 @@ inline void draw_setup_configure(Ctx &c, const Model &m) {
   print_wrapped(c, M + 6, std::max(y + 10, 700), c.f.t18, c.ink, m.device_name, W - 2 * M - 12, 24);
 }
 
-// Asleep before setup finished (10 min on battery): the hotspot is off while it
+// Asleep before setup finished (10 min on battery): nothing can reach it while it
 // sleeps, so say how to bring it back instead of leaving a QR code up.
 inline void draw_setup_sleep(Ctx &c, const Model &m) {
   const bool wifi = m.setup() == Setup::WIFI;
@@ -1010,7 +973,7 @@ inline void draw_setup_sleep(Ctx &c, const Model &m) {
                 wifi ? "Wi-Fi isn't set up yet." : configure ? "Setup isn't finished yet." : "Not added to Home Assistant yet.",
                 W - 2 * M - 60, 30);
   print_wrapped(c, M + 30, 420, c.f.t20, c.ink,
-                wifi        ? "Press any button: the Sticky wakes up and opens its setup hotspot again."
+                wifi        ? "Press any button: the Sticky wakes up and shows how to set up Wi-Fi again."
                 : configure ? "Press any button: the Sticky wakes up and shows how to finish setup."
                             : "Press any button: the Sticky wakes up and shows how to add it again.",
                 W - 2 * M - 60, 28);
@@ -1289,7 +1252,7 @@ inline float to_float(const std::string &v) {
 /// and what the simulator's sc_set passes on. Keys: atv_state title series artist
 /// app season episode position duration volume position_at (ISO 8601) picture
 /// light0_state light1_state light0_brightness light1_brightness online usb
-/// battery sleeping net ip ha_paired ap_ssid ap_password device_name setup_url
+/// battery sleeping net ip ha_paired device_name setup_url
 /// light_count light_icon0 light_icon1 configured app_button.
 inline void apply(const std::string &key, const std::string &v) {
   auto &m = model();
@@ -1322,15 +1285,14 @@ inline void apply(const std::string &key, const std::string &v) {
     if (std::isnan(m.battery) || (int) m.battery != (int) x) request();
     m.battery = x;
     return;
-  } else if (key == "net") {
-    return set_network(v == "connected", v == "hotspot", m.ip);
+  } else if (key == "net") {   // connected, connecting, no_network, unreachable
+    return set_network(v == "connected" ? Net::CONNECTED : v == "no_network" || v == "hotspot" ? Net::NO_NETWORK
+                       : v == "unreachable" ? Net::UNREACHABLE : Net::CONNECTING, m.ip);
   } else if (key == "ip") {
-    return set_network(m.net == Net::CONNECTED, m.net == Net::HOTSPOT, v);
+    return set_network(m.net, v);
   } else if (key == "ha_paired") {
     return set_ha_paired(v == "1");
-  } else if (key == "ap_ssid") m.ap_ssid = v;
-  else if (key == "ap_password") m.ap_password = v;
-  else if (key == "device_name") m.device_name = v;
+  } else if (key == "device_name") m.device_name = v;
   else if (key == "setup_url") m.setup_url = v;
   else if (key == "light_count") {
     m.light_count = v == "1" ? 1 : 2;

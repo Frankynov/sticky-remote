@@ -10,7 +10,8 @@ import { renderRemote, renderImage, drawIcon } from "./device-preview.js";
 
 // ?demo: pretend Sticky and pretend Home Assistant. ?demo=sticky: pretend
 // Sticky with your real Home Assistant. ?demo=update: the pretend Sticky
-// already runs an older, set-up Sticky Remote.
+// already runs an older, set-up Sticky Remote. ?demo=reauth: after the
+// install, the pretend Home Assistant asks to confirm the Sticky's new key.
 const DEMO = new URLSearchParams(location.search).has("demo");
 const DEMO_MODE = new URLSearchParams(location.search).get("demo");
 const DEMO_HA = DEMO && DEMO_MODE !== "sticky";
@@ -34,6 +35,8 @@ const S = {
     room: "", ha_url: "", font_set: "inter", touch_sound: "quiet", sleep_after: "3", sleep_clock: "on",
   },
   timers: [],
+  attn: null,           // Home Assistant's side of the pairing (haAttention)
+  unpaired: false,      // the Sticky was told once to forget a stale key
   skipped: new Set(),   // steps this visit doesn't need (shown with a dash)
   live: {},             // latest entity states from Home Assistant, for the previews
 };
@@ -149,15 +152,7 @@ const VIEWS = [
       bind: () => {
         $("#change").addEventListener("click", () => startFlow("settings"));
         $("#finish").addEventListener("click", () => finish());
-        if (!(S.info?.wifi?.connected && S.info?.ha?.connected)) {
-          S.timers.push(setInterval(async () => {
-            const n = await S.serial.info(1).catch(() => null);
-            if (!n) return;
-            S.info = n;
-            stopTimers();   // the re-render starts a new check while something is still missing
-            render();
-          }, 3000));
-        }
+        if (!(S.info?.wifi?.connected && S.info?.ha?.connected)) watchLink();
       },
     };
 
@@ -473,20 +468,22 @@ const VIEWS = [
       const sleeps = after === "never" ? "It stays awake until you press the AI button"
         : `On battery it sleeps after ${esc(after)} minute${after === "1" ? "" : "s"}, or when you press the AI button`;
       const text = S.flow === "update" ? `${esc(i.name)} runs Sticky Remote ${esc(i.fw)}, with its Wi-Fi, settings and Home Assistant pairing kept.`
-        : S.flow === "wifi" ? `${esc(i.name)} is on <b>${esc(i.wifi?.ssid || "its new network")}</b>. Home Assistant finds it again by itself within a minute.`
+        : S.flow === "wifi" ? `${esc(i.name)} is on <b>${esc(i.wifi?.ssid || "its new network")}</b>.`
         : S.flow === "settings" ? "The Sticky restarted with its new settings."
         : `${sleeps}; any button wakes it. To change what it controls, or to update it, plug it in and open this page again.`;
       const withPreview = S.flow === "setup" || S.flow === "settings";
+      const linked = S.flow === "setup" || (i.wifi?.connected && i.ha?.connected);
       return {
         html: `
           <h2>${S.flow === "setup" ? "Your Sticky is ready" : "All done"}</h2>
           <div class="${withPreview ? "with-device" : ""}"><div>
             <p class="big-ok"><i class="ic ic-check"></i></p>
             <p class="lead">${text}</p>
-            <p>You can unplug it.</p>
+            ${S.flow === "setup" ? "" : `<ul class="checks">${linkChecks()}</ul>`}
+            <p>You can unplug it${linked ? "" : " once both are ticked"}.</p>
           </div>${withPreview ? preview : ""}</div>
           ${again}`,
-        bind: () => { bindAgain(); draw(); S.serial?.close(); },
+        bind: () => { bindAgain(); draw(); if (linked) S.serial?.close(); else watchLink(); },
       };
     }
 
@@ -500,7 +497,7 @@ const VIEWS = [
         <div class="with-device"><div>
           <ol class="todo">
             <li id="t-add" class="${i.ha?.connected ? "ok" : "now"}"><b>Add the Sticky</b>
-              <p>In <b>Settings › Devices & services</b>, under <i>Discovered</i>, click <b>Add</b> on the ESPHome card for ${esc(i.name || "the Sticky")}. Home Assistant gives it its encryption key by itself.</p>
+              <p id="t-add-note">In <b>Settings › Devices & services</b>, under <i>Discovered</i>, click <b>Add</b> on the ESPHome card for ${esc(i.name || "the Sticky")}. Home Assistant gives it its encryption key by itself.</p>
               ${link("/config/integrations/dashboard", "Open Devices & services")}</li>
             <li id="t-allow"><b>Let it control things</b>
               <p>Open that device's <b>Configure</b> (⚙︎) and turn on <b>Allow the device to perform Home Assistant actions</b>. Without it, the Sticky shows your lights but can't switch them.</p>
@@ -529,6 +526,14 @@ const VIEWS = [
             added();
             setTimeout(() => { const h = $("#t-hint"); if (h) h.hidden = false; }, 45000);
           }
+          // Home Assistant's side: already knows it, or wants something first.
+          if (n.ha?.connected) return;
+          const attn = await haAttention(n.name);
+          const note = $("#t-add-note");
+          if (!attn || !note) return;
+          if (attn.step) note.innerHTML = haLink(n, attn)[1];
+          else if (attn.entry) note.innerHTML = `Home Assistant already knows <b>${esc(n.name)}</b> and reconnects to it by itself. If nothing happens within a minute, look for a notice on it under ESPHome.${haOpen()}`;
+          else if (has("unpair") && !S.unpaired) { S.unpaired = true; S.serial.unpair(); }   // a stale key would block the add
         }, 2500));
         if (S.ha.client && !S.watching) {
           S.watching = true;
@@ -572,10 +577,70 @@ function updatedSummary() {
     <ul class="checks">
       <li class="ok">Updated to Sticky Remote ${esc(i.fw)} on ${esc(i.name)}.</li>
       <li class="ok">Settings kept: ${esc(i.settings?.player || "")}${i.settings?.light1 ? `, ${esc(i.settings.light1)}` : ""}${i.settings?.light2 ? `, ${esc(i.settings.light2)}` : ""}.</li>
-      <li class="${i.wifi?.connected ? "ok" : "wait"}" id="upd-wifi">${i.wifi?.connected ? `Back on Wi-Fi: ${esc(i.wifi.ssid || "")} · ${esc(i.wifi.ip)}` : "Reconnecting to Wi-Fi…"}</li>
-      <li class="${i.ha?.connected ? "ok" : "wait"}" id="upd-ha">${i.ha?.connected ? "Home Assistant is connected again." : "Waiting for Home Assistant to reconnect…"}</li>
-    </ul>
-    <p class="note">The Home Assistant pairing was kept: there's nothing to do there.</p>`;
+      ${linkChecks()}
+    </ul>`;
+}
+
+// The Wi-Fi and Home Assistant lines of a checklist, from the Sticky's view
+// (its info line) and Home Assistant's (haAttention).
+function linkChecks() {
+  const i = S.info || {};
+  const [cls, html] = haLink(i, S.attn);
+  return `
+      <li class="${i.wifi?.connected ? "ok" : "wait"}" id="upd-wifi">${wifiLine(i)}</li>
+      <li class="${cls}" id="upd-ha">${html}</li>`;
+}
+const wifiLine = (i) => i.wifi?.connected ? `Back on Wi-Fi: ${esc(i.wifi.ssid || "")} · ${esc(i.wifi.ip)}` : "Reconnecting to Wi-Fi…";
+const haOpen = () => {
+  const base = S.ha.url.replace(/\/+$/, "");
+  return base ? ` <a href="${esc(base + "/config/integrations/integration/esphome")}" target="_blank" rel="noopener">Open ESPHome in Home Assistant</a>` : "";
+};
+function haLink(i, attn) {
+  const name = `<b>${esc(i?.name || "the Sticky")}</b>`;
+  if (i?.ha?.connected) return ["ok", "Home Assistant is connected."];
+  if (attn?.step === "reauth_encryption_removed_confirm")
+    return ["warn", `<b>Home Assistant asks you to confirm the Sticky.</b> Reflashing gave ${name} a new connection key. In Home Assistant, under ESPHome, click <b>Reconfigure</b> on it, then <b>Submit</b>. This page carries on by itself.${haOpen()}`];
+  if (attn?.step)
+    return ["warn", `<b>Home Assistant asks for the Sticky's key</b>, which it no longer has. This page told the Sticky to forget its old pairing: in Home Assistant, under ESPHome, delete ${name}, then add it again from <i>Discovered</i>. It gets a fresh key.${haOpen()}`];
+  return ["wait", attn?.entry ? "Home Assistant knows this Sticky and is reconnecting…" : "Waiting for Home Assistant to reconnect…"];
+}
+
+// Home Assistant's side of the pairing: its entry for this Sticky, and a
+// set-up flow waiting on the user (after a reflash the Sticky may hold a new
+// key, or none, and Home Assistant asks before it goes on). Only this page's
+// own Home Assistant connection can see that.
+async function haAttention(name) {
+  const c = S.ha.client;
+  if (!c?.flows || !name) return null;
+  try {
+    const [flows, entries] = await Promise.all([c.flows(), c.entries("esphome")]);
+    const entry = entries.find((e) => e.title === name || e.title?.startsWith(name + " ")) || null;
+    const flow = flows.find((f) => f.handler === "esphome" && f.context?.source === "reauth"
+      && (entry ? f.context.entry_id === entry.entry_id : (f.context.title_placeholders?.name || "").includes(name))) || null;
+    return { entry, step: flow?.step_id || "" };
+  } catch { return null; }
+}
+
+// Keeps the two lines current until both are ticked, then lets the port go.
+function watchLink() {
+  S.timers.push(setInterval(async () => {
+    const n = await S.serial.info(1).catch(() => null);
+    if (n) S.info = n;
+    const i = S.info;
+    const w = $("#upd-wifi"), h = $("#upd-ha");
+    if (!w || !h) return;
+    S.attn = i?.ha?.connected ? null : await haAttention(i?.name);
+    if (S.attn?.step && S.attn.step !== "reauth_encryption_removed_confirm" && has("unpair") && !S.unpaired) {
+      S.unpaired = true;
+      S.serial.unpair();
+    }
+    w.className = i?.wifi?.connected ? "ok" : "wait";
+    w.innerHTML = wifiLine(i || {});
+    const [cls, html] = haLink(i, S.attn);
+    h.className = cls;
+    h.innerHTML = html;
+    if (i?.wifi?.connected && i?.ha?.connected) { stopTimers(); if (S.finished) S.serial?.close(); }
+  }, 3000));
 }
 
 // --- Wi-Fi step -------------------------------------------------------------------------
@@ -808,6 +873,7 @@ async function connectHA() {
     await c.connect();
     const [states, cfg] = await Promise.all([c.states(), c.config()]);
     h.client = c; h.states = states; h.location = cfg.location_name || "Home Assistant";
+    if (DEMO_MODE === "reauth") c.pretendReflashed?.();
     h.manual = false;
     if (DEMO_HA && !h.url) h.url = "https://demo.home-assistant.invalid";
     if (h.remember && !DEMO_HA) localStorage.setItem("sticky.haURL", h.url);

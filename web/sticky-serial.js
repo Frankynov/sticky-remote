@@ -92,6 +92,8 @@ export class StickySerial {
 
   /** Starts a Wi-Fi scan (firmware 0.4+; older ones answer with an error, ignored). The list comes with info(). */
   async scan() { try { await this.send({ sticky: "setup", cmd: "scan" }); } catch {} }
+  /** Forgets the key Home Assistant gave it, so Home Assistant can add it afresh. */
+  async unpair() { try { await this.send({ sticky: "setup", cmd: "unpair" }); } catch {} }
 
   /** Saves settings and/or Wi-Fi; resolves once the board confirmed (it then restarts). */
   async set({ settings, wifi }) {
@@ -172,6 +174,7 @@ export class DemoSticky {
   async close() {}
   /** Demo: the list fills in a few seconds after the first scan, as on the device. */
   async scan() { this.scanned ??= Date.now(); }
+  async unpair() { this.state.ha = { connected: false, paired: false }; }
   async info() {
     await sleep(400);
     if (!this.state.fw) return null;
@@ -179,10 +182,10 @@ export class DemoSticky {
     if (this.booted && Date.now() - this.booted > 8000 && s.ha.paired) s.ha.connected = true;
     return {
       sticky: "setup", event: "info", ok: true, protocol: 1, fw: s.fw, name: s.name, mac: "d0:ef:76:d3:a0:a1",
-      wifi: s.wifi && !(this.booted && Date.now() - this.booted < 4000) ? { connected: true, hotspot: false, ip: "192.168.1.57", ssid: s.wifi.ssid }
-                   : { connected: false, hotspot: true, ip: "" },
+      wifi: s.wifi && !(this.booted && Date.now() - this.booted < 4000) ? { connected: true, ip: "192.168.1.57", ssid: s.wifi.ssid }
+                   : { connected: false, ip: "" },
       ha: s.ha, configured: !!(s.settings.player || s.settings.light1), settings: s.settings,
-      caps: ["scan", "touch_sound", "sleep_after", "sleep_clock"],
+      caps: ["scan", "touch_sound", "sleep_after", "sleep_clock", "unpair"],
       networks: this.scanned && Date.now() - this.scanned > 2500
         ? [{ ssid: "Maison", rssi: -48, secure: true }, { ssid: "Maison-IoT", rssi: -61, secure: true },
            { ssid: "Maison", rssi: -70, secure: true }, { ssid: "Cafe du coin", rssi: -77, secure: false },

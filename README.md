@@ -32,9 +32,10 @@ page runs the whole wizard without a Sticky or a Home Assistant.
   device, not compiled in: the player and its remote, the app button, the
   lights with their labels and icons, the room, and the typeface (Inter, or
   TRMNL's e-paper pixel fonts).
-- **Onboarding on the device.** A fresh Sticky opens an open `Sticky-Remote`
-  hotspot and shows a QR code to join it. Then it shows how to add it to Home
-  Assistant.
+- **Onboarding on the device.** A Sticky with no Wi-Fi (or none in reach)
+  says so and points to the setup page; connected but not added yet, it shows
+  how to add it to Home Assistant. There is no hotspot or captive portal:
+  everything is done from the page, over USB.
 - **One page, no tabs.** Everything is on screen at once, so nothing you do
   needs more than a fast partial refresh. The full refresh that clears
   e-paper ghosting waits until the Sticky has been left alone for 3 seconds.
@@ -61,6 +62,13 @@ page runs the whole wizard without a Sticky or a Home Assistant.
 - **A Sticky that's already set up** gets a short menu instead: update it,
   change what it controls, move it to another Wi-Fi, or start from scratch.
   Each runs only the steps it needs and keeps everything else.
+- **The last page watches both ends**: the Sticky's Wi-Fi and Home Assistant
+  link, and Home Assistant's own side through the page's connection to it.
+  After a reflash the Sticky may hold a new key or none, and Home Assistant
+  then asks you to confirm it before reconnecting (a *Reconfigure* notice
+  under ESPHome): the page says so and where to click, and carries on once
+  it's done. A Sticky that Home Assistant has forgotten is told to drop its
+  old key, so it can be added again like a new one.
 
 ## Privacy
 
@@ -106,7 +114,7 @@ cd firmware && esphome compile sticky-remote-generic.yaml
 ```
 
 - `sticky-remote-generic.yaml` is the firmware the wizard flashes: empty
-  settings, Wi-Fi in setup mode, the MAC appended to its name
+  settings, no Wi-Fi until the page sends one, the MAC appended to its name
   (`sticky-remote-a1b2c3`), no OTA password. A fresh Sticky shows **Finish
   setup** until it receives settings over USB.
 - `sticky-remote.yaml` is the base. Its `substitutions:` are the defaults for
@@ -151,7 +159,7 @@ The console UART (115200 baud, through the CH343 bridge) carries the log and
 newline-delimited JSON lines with `"sticky":"setup"`.
 
 - `{"sticky":"setup","cmd":"get"}` → an info line: name, MAC, firmware
-  version, Wi-Fi (connected, hotspot, IP, SSID), HA (connected, paired),
+  version, Wi-Fi (connected, IP, SSID), HA (connected, paired),
   `configured`, the settings and nearby networks. The board also sends it once
   at boot, with `"event":"hello"`.
 - `{"sticky":"setup","cmd":"set","settings":{…},"wifi":{"ssid":"…","pass":"…"}}`
@@ -159,8 +167,10 @@ newline-delimited JSON lines with `"sticky":"setup"`.
 - `{"sticky":"setup","cmd":"reset"}` clears the settings.
 - `{"sticky":"setup","cmd":"scan"}` starts a Wi-Fi scan; the networks come
   with the next `get`, a few seconds later.
+- `{"sticky":"setup","cmd":"unpair"}` makes the Sticky forget the encryption
+  key Home Assistant gave it, so Home Assistant can add it afresh.
 - The info line's `caps` lists what the firmware supports beyond the first
-  protocol (`scan`, `touch_sound`, `sleep_after`, `sleep_clock`); the setup page hides what's missing.
+  protocol (`scan`, `touch_sound`, `sleep_after`, `sleep_clock`, `unpair`); the setup page hides what's missing.
 - Development builds (`touch_calibration: "true"`) add
   `{"sticky":"setup","cmd":"calibrate"}` and `{"sticky":"setup","cmd":"touch_reset"}`.
   The info line's `touch` object gives the map in use and its source.

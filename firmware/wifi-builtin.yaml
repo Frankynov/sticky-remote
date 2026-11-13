@@ -1,5 +1,5 @@
 # Wi-Fi mode "builtin" (default): the network from secrets.yaml is compiled in.
-# A network chosen later on the Sticky's setup hotspot is saved on the device
+# A network sent later by the setup page (over USB) is saved on the device
 # and takes priority. Selected by the wifi_mode substitution.
 wifi:
   ssid: !secret wifi_ssid
@@ -10,9 +10,3 @@ wifi:
   # A remote answers taps: no modem sleep (ESPHome's ESP32 default), which
   # holds packets back for tens of ms at a time and bunches them up.
   power_save_mode: none
-  ap:
-    # Open (no password), as most ESP devices do: it only runs while the
-    # Sticky can't connect, and its screen shows how to join it.
-    ssid: ${setup_ssid}
-    # Can't reach the network for this long: open the setup hotspot.
-    ap_timeout: 30s

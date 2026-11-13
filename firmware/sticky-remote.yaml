@@ -65,17 +65,16 @@ substitutions:
   # full refresh, so the greys come and go.
   grayscale: "false"
 
-  # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (chosen on the
-  # Sticky's hotspot or sent over USB). See wifi-builtin.yaml / wifi-setup.yaml.
+  # Wi-Fi: "builtin" (network from secrets.yaml) or "setup" (none until the
+  # setup page sends one over USB). See wifi-builtin.yaml / wifi-setup.yaml.
   wifi_mode: builtin
-  setup_ssid: Sticky-Remote
 
   # Over-the-air updates: empty means no password (the generic firmware).
   ota_password: ""
 
   # How long before it sleeps on battery is a device setting ("Sleep after":
   # 1, 3, 10 or 30 minutes, or never), 3 minutes by default; on USB it stays awake.
-  # During setup (hotspot open, not configured, or not yet added to HA).
+  # During setup (no Wi-Fi, not configured, or not yet added to HA).
   setup_sleep_after_ms: "600000"
 
 esphome:
@@ -102,6 +101,7 @@ esphome:
         - lambda: |-
             remote_ui::release_sleep_holds();
             id(last_activity) = millis();
+            id(last_online) = millis();
             remote_ui::request(true);
             // Settings: the YAML's values are defaults; stored ones (sent over USB) win.
             auto &d = sticky::defaults();
@@ -152,18 +152,14 @@ esphome:
             };
             static EspActions esp_actions;
             remote_ui::actions() = &esp_actions;
-    # After setup: the setup screens need the hotspot's name and password,
-    # and the QR code that joins it (WIFI: URI, read by phone cameras).
+    # After setup: what the setup screens show.
     - priority: -100
       then:
         - lambda: |-
-            auto ap = wifi::global_wifi_component->get_ap();
-            const std::string ssid(ap.get_ssid().c_str()), pass(ap.get_password().c_str());
-            remote_ui::set_setup_info(App.get_name().c_str(), ssid, pass);
+            remote_ui::set_device_name(App.get_name().c_str());
             remote_ui::apply("setup_url", "${setup_url}");
-            id(wifi_qr).set_value(remote_ui::wifi_qr_text(ssid, pass));
-            remote_ui::wifi_qr() = id(wifi_qr);
             remote_ui::set_ha_paired(id(ha_paired));
+            sticky::unpair_hook() = []() { id(ha_paired) = false; };
             // Announce ourselves on the USB line for setup tools.
             sticky::send_line(sticky::info("hello"));
 
@@ -186,23 +182,16 @@ logger:
   hardware_uart: UART0
 
 # Wi-Fi: wifi-builtin.yaml (network from secrets.yaml) or wifi-setup.yaml
-# (set up on the device). Either way, when the Sticky can't connect it opens
-# the "${setup_ssid}" hotspot: join it (the panel shows a QR code), and the
-# captive portal page lets you pick a network. Improv over USB works too.
+# (none compiled in). Either way the network sent over USB by the setup page
+# is saved on the device and wins. No hotspot or captive portal: everything
+# is set up from the page, and the panel says so when it has no network.
 packages:
   wifi: !include wifi-${wifi_mode}.yaml
   grayscale: !include display-grayscale-${grayscale}.yaml
 
-captive_portal:
-
 # JSON for the USB setup protocol (sticky_device.h). It replaces Improv: both
 # would read the same serial line.
 json:
-
-# The setup screen's "join this hotspot" QR code; its value is set at boot.
-qr_code:
-  - id: wifi_qr
-    value: "WIFI:T:nopass;S:${setup_ssid};;"
 
 api:
   # No key compiled in: Home Assistant sends one when the Sticky is added, and
@@ -280,6 +269,9 @@ globals:
     initial_value: "false"
   # When a button last woke it: that press only wakes it.
   - id: woke_at
+    type: uint32_t
+  # Last time Wi-Fi was up (or boot, or a wake): "out of reach" after 90 s without.
+  - id: last_online
     type: uint32_t
     initial_value: "0"
   - id: last_tap
@@ -591,6 +583,7 @@ script:
           id(dozing) = false;
           id(woke_at) = millis();
           id(last_activity) = millis();
+          id(last_online) = millis();
           remote_ui::model().sleeping = false;
           remote_ui::request(true);
           wifi::global_wifi_component->enable();
@@ -653,10 +646,12 @@ interval:
           then:
             - script.execute: go_to_sleep
 
-  # Network state for the setup screens (hotspot active, connected, address).
+  # Network state for the setup screens (connected, address, or nothing to
+  # join). Not while asleep: Wi-Fi is off on purpose then.
   - interval: 1s
     then:
       - lambda: |-
+          if (remote_ui::model().sleeping) return;
           auto *w = wifi::global_wifi_component;
           std::string ip;
           if (w->is_connected())
@@ -666,7 +661,13 @@ interval:
                 ip = a.str_to(buf);
                 break;
               }
-          remote_ui::set_network(w->is_connected(), w->is_ap_active(), ip);
+          using remote_ui::Net;
+          Net net = Net::CONNECTING;
+          if (w->is_connected()) { net = Net::CONNECTED; id(last_online) = millis(); }
+          else if (!w->has_sta() || w->get_sta().get_ssid() == "sticky-remote-no-network")
+            net = Net::NO_NETWORK;   // only wifi-setup.yaml's placeholder: nothing real to join
+          else if (millis() - id(last_online) > 90000) net = Net::UNREACHABLE;   // as the old hotspot timeout
+          remote_ui::set_network(net, ip);
 
   # Sleep after a quiet spell, on battery only.
   - interval: 5s
@@ -674,7 +675,7 @@ interval:
       - if:
           condition:
             lambda: |-
-              // Setup screens (hotspot, pairing) get much longer: they need it awake.
+              // Setup screens (Wi-Fi, pairing) get much longer: they need it awake.
               const auto &m = remote_ui::model();
               const uint32_t chosen = sticky::sleep_after_ms();   // 0: never by itself
               if (chosen == 0) return false;

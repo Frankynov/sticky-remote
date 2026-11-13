@@ -51,6 +51,10 @@ export class HAClient {
 
   states() { return this.call({ type: "get_states" }); }
   config() { return this.call({ type: "get_config" }); }
+  /** Set-up flows waiting on the user (a re-authentication, for one). */
+  flows() { return this.call({ type: "config_entries/flow/progress" }); }
+  /** The integration's entries: {entry_id, title, state, …}. */
+  entries(domain) { return this.call({ type: "config_entries/get", domain }); }
 
   /** Calls f(entity_id, {state, attributes}) whenever one of `entities` changes. */
   async watch(entities, f) {
@@ -79,6 +83,15 @@ export class DemoHA {
   constructor() { this.version = "2026.11.0 (demo)"; this.lightOn = false; }
   async connect() { await new Promise((r) => setTimeout(r, 600)); return this; }
   async config() { return { location_name: "Demo home" }; }
+  /** Demo: a reflashed Sticky makes Home Assistant ask to confirm its new key, until "confirmed" 25 s later. */
+  pretendReflashed() { this.reauthUntil = Date.now() + 25000; }
+  async flows() {
+    return this.reauthUntil && Date.now() < this.reauthUntil
+      ? [{ flow_id: "demo", handler: "esphome", step_id: "reauth_encryption_removed_confirm",
+           context: { source: "reauth", entry_id: "demo-entry", title_placeholders: { name: "sticky-remote-d3m0a1" } } }]
+      : [];
+  }
+  async entries() { return [{ entry_id: "demo-entry", title: "sticky-remote-d3m0a1", state: "loaded" }]; }
   async states() {
     const L = (id, name, s) => ({ entity_id: id, state: s, attributes: { friendly_name: name } });
     return [

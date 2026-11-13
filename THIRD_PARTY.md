@@ -8,7 +8,6 @@ their own licenses.
 | [Inter](https://rsms.me/inter/) Bold, by Rasmus Andersson | `firmware/fonts/Inter-Bold.ttf` | SIL OFL 1.1 (`firmware/fonts/OFL-1.1.txt`) |
 | TRMNL12, TRMNL16, TRMNL21, by Heavyweight Digital Type Foundry for [TRMNL](https://trmnl.com/font-family) | `firmware/fonts/trmnl/` | SIL OFL 1.1 (`firmware/fonts/trmnl/OFL.txt`, `NOTICE.md`) |
 | [Material Design Icons](https://pictogrammers.com/library/mdi/), by Pictogrammers | `firmware/fonts/materialdesignicons-webfont.ttf` | Apache 2.0 (`firmware/fonts/Apache-2.0.txt`) |
-| [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library), by Project Nayuki | `engine/core/qrcodegen/` | MIT (`engine/core/qrcodegen/LICENSE.md`) |
 | [esptool-js](https://github.com/espressif/esptool-js) 0.7.1, by Espressif | `web/vendor/` | Apache 2.0 (`web/vendor/esptool-js-LICENSE.txt`) |
 | Icon shapes after [Lucide](https://lucide.dev) | `web/icons/` | ISC |
 | Colour and spacing values after [shadcn/ui](https://ui.shadcn.com) | `web/wizard.css` | MIT |

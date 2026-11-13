@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "remote_ui.h"
-#include "esphome/components/qr_code/qr_code.h"
 
 using namespace esphome;
 
@@ -47,14 +46,6 @@ struct Poster : runtime_image::RuntimeImage {
 } g_poster;
 
 display::Display g_display;
-
-// The setup screen's QR code (the firmware's is a qr_code component).
-qr_code::QrCode &qr() {
-  static qr_code::QrCode q;
-  static bool linked = (remote_ui::wifi_qr() = &q, true);
-  (void) linked;
-  return q;
-}
 
 // Forwards remote_ui's Actions to the host's callback.
 struct CallbackActions : remote_ui::Actions {
@@ -152,10 +143,6 @@ void sc_set_labels(const char *room, const char *l1, const char *l2, const char 
 void sc_set(const char *key_c, const char *v_c) {
   const std::string key = key_c, v = v_c ? v_c : "";
   remote_ui::apply(key, v);
-  if (key == "ap_ssid" || key == "ap_password" || key == "device_name") {
-    auto &m = remote_ui::model();
-    qr().set_value(remote_ui::wifi_qr_text(m.ap_ssid, m.ap_password));
-  }
 }
 
 void sc_set_poster(const uint8_t *gray, int w, int h) {

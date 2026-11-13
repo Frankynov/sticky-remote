@@ -1,13 +1,13 @@
-# Wi-Fi mode "setup": no network compiled in. The Sticky opens its setup
-# hotspot straight away; the network chosen there is saved on the device.
-# Selected by the wifi_mode substitution (Prepare & Flash › Wi-Fi).
+# Wi-Fi mode "setup": no network compiled in. The setup page sends one over
+# USB and it is saved on the device; until then the panel says what to do.
+# Selected by the wifi_mode substitution.
 wifi:
+  # ESPHome insists on a network or a hotspot: this one doesn't exist, and
+  # the firmware treats it as "none" (sticky-remote.yaml, the 1 s interval).
+  networks:
+    - ssid: sticky-remote-no-network
+      password: "no-network"
   reboot_timeout: 0s
   # A remote answers taps: no modem sleep (ESPHome's ESP32 default), which
   # holds packets back for tens of ms at a time and bunches them up.
   power_save_mode: none
-  ap:
-    # Open (no password), as most ESP devices do: it only runs while the
-    # Sticky can't connect, and its screen shows how to join it.
-    ssid: ${setup_ssid}
-    ap_timeout: 30s

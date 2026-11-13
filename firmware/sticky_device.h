@@ -57,7 +57,7 @@ namespace sticky {
 static const char *const TAG = "sticky";
 constexpr int PROTOCOL = 1;
 // What this firmware's USB protocol can do beyond version 1, for the setup page.
-static const char *const CAPS[] = {"scan", "touch_sound", "sleep_after", "sleep_clock"};
+static const char *const CAPS[] = {"scan", "touch_sound", "sleep_after", "sleep_clock", "unpair"};
 
 struct Settings {
   std::string player, remote, player_name, app, app_label;
@@ -656,7 +656,6 @@ inline std::string info(const char *event) {
     const auto &m = remote_ui::model();
     JsonObject wifi = root["wifi"].to<JsonObject>();
     wifi["connected"] = w != nullptr && w->is_connected();
-    wifi["hotspot"] = w != nullptr && w->is_ap_active();
     wifi["ip"] = m.ip;
     if (w != nullptr && w->is_connected()) {
       char ssid[esphome::wifi::SSID_BUFFER_SIZE];
@@ -719,6 +718,12 @@ inline uint32_t &restart_at() {
   return t;
 }
 
+/// Set by the YAML: forgets that Home Assistant was ever connected.
+inline std::function<void()> &unpair_hook() {
+  static std::function<void()> f;
+  return f;
+}
+
 inline void handle(const std::string &line) {
   JsonDocument doc = esphome::json::parse_json(line);
   if (doc.isNull() || doc["sticky"] != "setup") return;
@@ -762,6 +767,17 @@ inline void handle(const std::string &line) {
       root["restarting"] = true;
     }));
     restart_at() = esphome::millis() + 800;
+  } else if (cmd == "unpair") {           // forget the key Home Assistant gave it, so HA can add it afresh
+#if defined(USE_API_NOISE) && !defined(USE_API_NOISE_PSK_FROM_YAML)
+    esphome::api::global_api_server->clear_noise_psk(true);
+#endif
+    if (unpair_hook()) unpair_hook()();
+    remote_ui::set_ha_paired(false);
+    send_line(esphome::json::build_json([](JsonObject root) {
+      root["sticky"] = "setup";
+      root["ok"] = true;
+      root["unpaired"] = true;
+    }));
   } else if (cmd == "scan") {             // looks for Wi-Fi networks; ask again in ~3 s for the list
     // Straight to the driver: ESPHome's own scan belongs to its connection
     // logic. Its handler stores the results (kept, see keep_scan_results()).

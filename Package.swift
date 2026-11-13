@@ -18,7 +18,6 @@ let package = Package(
             cxxSettings: [
                 .headerSearchPath("../../firmware"),   // remote_ui.h
                 .headerSearchPath("../stubs"),         // stand-ins for the ESPHome/ESP-IDF headers
-                .headerSearchPath("qrcodegen"),
             ]
         ),
     ],

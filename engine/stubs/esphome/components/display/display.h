@@ -12,9 +12,6 @@
 #include "esphome/core/color.h"
 
 namespace esphome {
-namespace qr_code {
-class QrCode;
-}
 namespace display {
 
 static const Color COLOR_OFF(0, 0, 0, 0);
@@ -68,8 +65,6 @@ class Display {
     if (x < 0 || y < 0 || x >= WIDTH || y >= HEIGHT) return;
     px[y * WIDTH + x] = c.is_on() ? 1 : 0;
   }
-  // Defined in esphome/components/qr_code/qr_code.h, like ESPHome's.
-  void qr_code(int x, int y, qr_code::QrCode *qr, Color color = COLOR_ON, int scale = 1);
   void fill(Color c) { std::fill(px.begin(), px.end(), c.is_on() ? 1 : 0); }
   void filled_rectangle(int x, int y, int w, int h, Color c) {
     for (int j = y; j < y + h; j++)
